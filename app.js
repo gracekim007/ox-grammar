@@ -254,6 +254,15 @@ function normalizeData(data) {
 
     if (!d.stats[c.id]) d.stats[c.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
     if (typeof d.stats[c.id].bookmark !== 'boolean') d.stats[c.id].bookmark = false;
+
+    // Bookmark 호환성
+    // - v3: stats[cardId].bookmark
+    // - v4+: card.bookmarked
+    if (typeof c.bookmarked === 'boolean') {
+      d.stats[c.id].bookmark = c.bookmarked;
+    } else {
+      c.bookmarked = !!d.stats[c.id].bookmark;
+    }
   });
 
   // Remove stats for deleted cards
@@ -407,20 +416,35 @@ function deckStats(deckId) {
 
 
 function isBookmarked(cardId) {
+  const card = DATA.cards?.find((c) => c.id === cardId);
+  if (card && typeof card.bookmarked === 'boolean') return card.bookmarked;
   return !!(DATA.stats?.[cardId]?.bookmark);
 }
 
 function toggleBookmark(cardId, force = null) {
   if (!DATA.stats[cardId]) DATA.stats[cardId] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
-  const cur = !!DATA.stats[cardId].bookmark;
+  const card = DATA.cards?.find((c) => c.id === cardId) || null;
+  const cur = isBookmarked(cardId);
   const next = force == null ? !cur : !!force;
   DATA.stats[cardId].bookmark = next;
+  if (card) {
+    card.bookmarked = next;
+    card.updatedAt = now();
+  }
   commit();
   return next;
 }
 
 function deckBookmarkCount(deckId) {
   return getCards(deckId).filter((c) => isBookmarked(c.id)).length;
+}
+
+function isWrongCard(cardId) {
+  return (DATA.stats?.[cardId]?.wrong || 0) > 0;
+}
+
+function deckWrongCount(deckId) {
+  return getCards(deckId).filter((c) => isWrongCard(c.id)).length;
 }
 
 function renderHome() {
@@ -443,6 +467,7 @@ function renderHome() {
       <div style="font-size: 13px; color: var(--muted); line-height: 1.5;">
         · 문장을 보고 <span class="kbd">O</span> 또는 <span class="kbd">X</span> 선택 → 정답/해설 확인 → <span class="kbd">다음</span>.<br>
         · 끝나면 <b>틀린 것만 다시</b> 모아서 반복할 수 있어요.
+        <br>· <b>북마크</b> / <b>오답</b> 버튼으로 모아 학습도 가능해요.
       </div>
     </div>
   `;
@@ -460,9 +485,11 @@ function renderHome() {
   decks.forEach((deck) => {
     const s = deckStats(deck.id);
     const bmCount = deckBookmarkCount(deck.id);
+    const wrongCount = deckWrongCount(deck.id);
     const meta = [
       `문제 ${s.cardsCount}개`,
       bmCount ? `북마크 ${bmCount}개` : null,
+      wrongCount ? `오답 ${wrongCount}개` : null,
       s.acc == null ? '기록 없음' : `정답률 ${s.acc}% (기록 ${s.total}회)`
     ].filter(Boolean).join(' · ');
 
@@ -474,6 +501,7 @@ function renderHome() {
       <div class="deck-actions">
         <button class="btn primary small" data-action="study">학습</button>
         <button class="btn small" data-action="bm" ${bmCount ? '' : 'disabled'}>북마크</button>
+        <button class="btn small" data-action="wrong" ${wrongCount ? '' : 'disabled'}>오답</button>
         <button class="btn small" data-action="manage">관리</button>
       </div>
     `;
@@ -483,6 +511,11 @@ function renderHome() {
     el.querySelector('[data-action="bm"]').addEventListener('click', () => {
       if (!bmCount) return;
       location.hash = `#/study/${deck.id}?mode=bookmarks`;
+    });
+
+    el.querySelector('[data-action="wrong"]').addEventListener('click', () => {
+      if (!wrongCount) return;
+      location.hash = `#/study/${deck.id}?mode=wrongs`;
     });
     el.querySelector('[data-action="manage"]').addEventListener('click', () => {
       location.hash = `#/deck/${deck.id}`;
@@ -550,6 +583,7 @@ function renderDeck(deckId) {
   const cards = getCards(deckId);
   const s = deckStats(deckId);
   const bmCount = deckBookmarkCount(deckId);
+  const wrongCount = deckWrongCount(deckId);
 
   setSubtitle(`${deck.name} · 문제 ${s.cardsCount}개`);
 
@@ -559,11 +593,12 @@ function renderDeck(deckId) {
         <div>
           <div style="font-weight: 800; font-size: 16px;">${escapeText(deck.name)}</div>
           <div style="color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.4;">${escapeText(deck.description || '')}</div>
-          <div style="margin-top: 10px; font-size: 12px; color: var(--muted);">기록: 맞춤 ${s.correct} · 틀림 ${s.wrong} · 북마크 ${bmCount}</div>
+          <div style="margin-top: 10px; font-size: 12px; color: var(--muted);">기록: 맞춤 ${s.correct} · 틀림 ${s.wrong} · 오답 ${wrongCount} · 북마크 ${bmCount}</div>
         </div>
         <div style="display:flex; flex-direction: column; gap: 8px; min-width: 140px;">
           <button class="btn primary small" id="btn-study">전체 학습</button>
           <button class="btn small" id="btn-study-bookmarks" ${bmCount ? '' : 'disabled'}>북마크 학습 (${bmCount})</button>
+          <button class="btn small" id="btn-study-wrongs" ${wrongCount ? '' : 'disabled'}>오답 학습 (${wrongCount})</button>
           <button class="btn small" id="btn-edit-deck">카테고리 수정</button>
           <button class="btn danger small" id="btn-delete-deck">카테고리 삭제</button>
         </div>
@@ -592,6 +627,17 @@ function renderDeck(deckId) {
     }
     location.hash = `#/study/${deckId}?mode=bookmarks`;
   });
+
+  const wrongBtn = $('#btn-study-wrongs');
+  if (wrongBtn) {
+    wrongBtn.addEventListener('click', () => {
+      if (!wrongCount) {
+        toast('틀린 문제가 없습니다');
+        return;
+      }
+      location.hash = `#/study/${deckId}?mode=wrongs`;
+    });
+  }
   $('#btn-edit-deck').addEventListener('click', () => openDeckModal(deck));
   $('#btn-delete-deck').addEventListener('click', () => {
     if (cards.length > 0) {
@@ -863,8 +909,9 @@ function openBulkAddModal(deckId) {
 let STUDY = null;
 
 function normalizeStudyMode(mode) {
-  const m = String(mode || '').toLowerCase();
-  if (m === 'bookmark' || m === 'bookmarks' || m === 'bm' || m === 'star' || m === 'stars') return 'bookmarks';
+  const m = String(mode || '').toLowerCase().trim();
+  if (['bookmark', 'bookmarks', 'bm', 'star', 'stars', '즐겨찾기', '북마크'].includes(m)) return 'bookmarks';
+  if (['wrong', 'wrongs', 'wrongonly', 'wrong-only', 'incorrect', 'mistake', 'mistakes', '오답', '오답노트', '틀림', '틀린', '틀린문제'].includes(m)) return 'wrongs';
   return 'all';
 }
 
@@ -872,6 +919,7 @@ function getCardIdsForMode(deckId, mode) {
   const all = getCards(deckId).map((c) => c.id);
   const m = normalizeStudyMode(mode);
   if (m === 'bookmarks') return all.filter((id) => isBookmarked(id));
+  if (m === 'wrongs') return all.filter((id) => isWrongCard(id));
   return all;
 }
 
@@ -958,12 +1006,34 @@ function renderStudy(deckId, opts = {}) {
     return;
   }
 
+  // 오답 모드인데(틀린 기록) 오답이 없으면 안내
+  if (desiredMode === 'wrongs' && desiredIds.length === 0) {
+    setSubtitle(`${deck.name} · 오답 학습`);
+    appEl.innerHTML = `
+      <div class="card">
+        <div style="font-weight: 850; font-size: 16px; margin-bottom: 8px;">틀린 문제가 없습니다</div>
+        <div style="color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
+          먼저 <b>전체 학습</b>을 하면서 틀린 문제가 쌓이면,<br>
+          여기서 <b>오답만</b> 모아서 회독할 수 있어요.
+        </div>
+        <div class="row" style="gap: 10px; flex-wrap: wrap;">
+          <button class="btn primary" id="go-all">전체 학습하기</button>
+          <button class="btn" id="go-manage">문제 관리</button>
+        </div>
+      </div>
+    `;
+    $('#go-all').addEventListener('click', () => (location.hash = `#/study/${deckId}`));
+    $('#go-manage').addEventListener('click', () => (location.hash = `#/deck/${deckId}`));
+    return;
+  }
+
   // init session if needed (or mode changed)
   if (!STUDY || STUDY.deckId !== deckId || (requestedMode && requestedMode !== STUDY.mode) || (STUDY && STUDY.queue && STUDY.queue.length === 0)) {
     newStudySession(deckId, desiredMode, desiredIds);
   }
 
-  setSubtitle(`${deck.name} · ${STUDY.mode === 'bookmarks' ? '북마크 학습' : '학습'}`);
+  const modeTitle = STUDY.mode === 'bookmarks' ? '북마크 학습' : (STUDY.mode === 'wrongs' ? '오답 학습' : '학습');
+  setSubtitle(`${deck.name} · ${modeTitle}`);
 
   // Summary
   if (STUDY.phase === 'summary') {
@@ -974,6 +1044,7 @@ function renderStudy(deckId, opts = {}) {
       <div class="card">
         <div style="font-weight: 850; font-size: 18px;">학습 완료</div>
         <div style="margin-top: 10px; color: var(--muted); line-height: 1.6;">
+          모드: <b>${STUDY.mode === 'bookmarks' ? '북마크' : (STUDY.mode === 'wrongs' ? '오답' : '전체')}</b><br>
           총 ${total}개 중 <b>맞춤 ${STUDY.correctCount}</b>, <b>틀림 ${STUDY.wrongCount}</b> · 정답률 <b>${acc}%</b>
         </div>
         <div class="hr"></div>
