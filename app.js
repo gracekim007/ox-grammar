@@ -185,7 +185,7 @@ function defaultData() {
 
   const stats = {};
   cards.forEach((c) => {
-    stats[c.id] = { correct: 0, wrong: 0, lastReviewed: null };
+    stats[c.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
   });
 
   return {
@@ -252,7 +252,8 @@ function normalizeData(data) {
     if (!c.createdAt) c.createdAt = now();
     if (!c.updatedAt) c.updatedAt = now();
 
-    if (!d.stats[c.id]) d.stats[c.id] = { correct: 0, wrong: 0, lastReviewed: null };
+    if (!d.stats[c.id]) d.stats[c.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+    if (typeof d.stats[c.id].bookmark !== 'boolean') d.stats[c.id].bookmark = false;
   });
 
   // Remove stats for deleted cards
@@ -403,6 +404,25 @@ function deckStats(deckId) {
   return { cardsCount: cards.length, correct, wrong, total, acc };
 }
 
+
+
+function isBookmarked(cardId) {
+  return !!(DATA.stats?.[cardId]?.bookmark);
+}
+
+function toggleBookmark(cardId, force = null) {
+  if (!DATA.stats[cardId]) DATA.stats[cardId] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+  const cur = !!DATA.stats[cardId].bookmark;
+  const next = force == null ? !cur : !!force;
+  DATA.stats[cardId].bookmark = next;
+  commit();
+  return next;
+}
+
+function deckBookmarkCount(deckId) {
+  return getCards(deckId).filter((c) => isBookmarked(c.id)).length;
+}
+
 function renderHome() {
   setSubtitle('카테고리 목록');
 
@@ -439,10 +459,12 @@ function renderHome() {
 
   decks.forEach((deck) => {
     const s = deckStats(deck.id);
+    const bmCount = deckBookmarkCount(deck.id);
     const meta = [
       `문제 ${s.cardsCount}개`,
+      bmCount ? `북마크 ${bmCount}개` : null,
       s.acc == null ? '기록 없음' : `정답률 ${s.acc}% (기록 ${s.total}회)`
-    ].join(' · ');
+    ].filter(Boolean).join(' · ');
 
     const el = document.createElement('div');
     el.className = 'card';
@@ -451,11 +473,16 @@ function renderHome() {
       <div class="deck-meta">${escapeText(meta)}</div>
       <div class="deck-actions">
         <button class="btn primary small" data-action="study">학습</button>
+        <button class="btn small" data-action="bm" ${bmCount ? '' : 'disabled'}>북마크</button>
         <button class="btn small" data-action="manage">관리</button>
       </div>
     `;
     el.querySelector('[data-action="study"]').addEventListener('click', () => {
       location.hash = `#/study/${deck.id}`;
+    });
+    el.querySelector('[data-action="bm"]').addEventListener('click', () => {
+      if (!bmCount) return;
+      location.hash = `#/study/${deck.id}?mode=bookmarks`;
     });
     el.querySelector('[data-action="manage"]').addEventListener('click', () => {
       location.hash = `#/deck/${deck.id}`;
@@ -522,6 +549,7 @@ function renderDeck(deckId) {
 
   const cards = getCards(deckId);
   const s = deckStats(deckId);
+  const bmCount = deckBookmarkCount(deckId);
 
   setSubtitle(`${deck.name} · 문제 ${s.cardsCount}개`);
 
@@ -531,10 +559,11 @@ function renderDeck(deckId) {
         <div>
           <div style="font-weight: 800; font-size: 16px;">${escapeText(deck.name)}</div>
           <div style="color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.4;">${escapeText(deck.description || '')}</div>
-          <div style="margin-top: 10px; font-size: 12px; color: var(--muted);">기록: 맞춤 ${s.correct} · 틀림 ${s.wrong}</div>
+          <div style="margin-top: 10px; font-size: 12px; color: var(--muted);">기록: 맞춤 ${s.correct} · 틀림 ${s.wrong} · 북마크 ${bmCount}</div>
         </div>
-        <div style="display:flex; flex-direction: column; gap: 8px; min-width: 120px;">
-          <button class="btn primary small" id="btn-study">학습</button>
+        <div style="display:flex; flex-direction: column; gap: 8px; min-width: 140px;">
+          <button class="btn primary small" id="btn-study">전체 학습</button>
+          <button class="btn small" id="btn-study-bookmarks" ${bmCount ? '' : 'disabled'}>북마크 학습 (${bmCount})</button>
           <button class="btn small" id="btn-edit-deck">카테고리 수정</button>
           <button class="btn danger small" id="btn-delete-deck">카테고리 삭제</button>
         </div>
@@ -556,6 +585,13 @@ function renderDeck(deckId) {
   `;
 
   $('#btn-study').addEventListener('click', () => (location.hash = `#/study/${deckId}`));
+  $('#btn-study-bookmarks').addEventListener('click', () => {
+    if (!bmCount) {
+      toast('북마크된 문제가 없습니다');
+      return;
+    }
+    location.hash = `#/study/${deckId}?mode=bookmarks`;
+  });
   $('#btn-edit-deck').addEventListener('click', () => openDeckModal(deck));
   $('#btn-delete-deck').addEventListener('click', () => {
     if (cards.length > 0) {
@@ -597,7 +633,8 @@ function renderDeck(deckId) {
       .slice()
       .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
       .forEach((c) => {
-        const st = DATA.stats[c.id] || { correct: 0, wrong: 0 };
+        const st = DATA.stats[c.id] || { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+        const bm = isBookmarked(c.id);
         const total = (st.correct || 0) + (st.wrong || 0);
         const acc = total === 0 ? '' : ` · 정답률 ${Math.round(((st.correct || 0) / total) * 100)}%`;
         const tags = (c.tags || []).slice(0, 3).join(', ');
@@ -610,11 +647,17 @@ function renderDeck(deckId) {
             <div class="item-sub">정답 ${escapeText(c.answer)} · 기록 ${total}회${escapeText(acc)}${tags ? ` · 태그 ${escapeText(tags)}` : ''}</div>
           </div>
           <div class="item-actions">
+            <button class="btn small" data-bm title="북마크">${bm ? '★' : '☆'}</button>
             <span class="pill">${escapeText(c.answer)}</span>
             <button class="btn small" data-edit>수정</button>
             <button class="btn small danger" data-del>삭제</button>
           </div>
         `;
+        $('[data-bm]', row).addEventListener('click', () => {
+          const next = toggleBookmark(c.id);
+          toast(next ? '북마크됨' : '북마크 해제');
+          renderList();
+        });
         $('[data-edit]', row).addEventListener('click', () => openCardModal({ deckId, card: c }));
         $('[data-del]', row).addEventListener('click', () => {
           const ok = confirm('이 문제를 삭제할까요?');
@@ -704,7 +747,7 @@ function openCardModal({ deckId, card }) {
             createdAt: now(),
             updatedAt: now(),
           });
-          DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null };
+          DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
         }
 
         commit();
@@ -801,7 +844,7 @@ function openBulkAddModal(deckId) {
             createdAt: now(),
             updatedAt: now(),
           });
-          DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null };
+          DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
         });
 
         commit();
@@ -819,11 +862,27 @@ function openBulkAddModal(deckId) {
 
 let STUDY = null;
 
-function newStudySession(deckId, cardIds) {
+function normalizeStudyMode(mode) {
+  const m = String(mode || '').toLowerCase();
+  if (m === 'bookmark' || m === 'bookmarks' || m === 'bm' || m === 'star' || m === 'stars') return 'bookmarks';
+  return 'all';
+}
+
+function getCardIdsForMode(deckId, mode) {
+  const all = getCards(deckId).map((c) => c.id);
+  const m = normalizeStudyMode(mode);
+  if (m === 'bookmarks') return all.filter((id) => isBookmarked(id));
+  return all;
+}
+
+function newStudySession(deckId, mode = 'all', cardIds = null) {
+  const m = normalizeStudyMode(mode);
+  const ids = Array.isArray(cardIds) ? cardIds.slice() : getCardIdsForMode(deckId, m);
+
   STUDY = {
     deckId,
     phase: 'study',
-    queue: shuffle(cardIds),
+    queue: shuffle(ids),
     index: 0,
 
     // per-card
@@ -835,9 +894,10 @@ function newStudySession(deckId, cardIds) {
     wrongIds: [],
     correctCount: 0,
     wrongCount: 0,
-    mode: 'all',
+    mode: m,
   };
 }
+
 
 function resetPerCardState() {
   if (!STUDY) return;
@@ -846,7 +906,7 @@ function resetPerCardState() {
   STUDY.lastIsCorrect = null;
 }
 
-function renderStudy(deckId) {
+function renderStudy(deckId, opts = {}) {
   const deck = getDeck(deckId);
   if (!deck) {
     appEl.innerHTML = `<div class="card">존재하지 않는 카테고리입니다.</div>`;
@@ -870,12 +930,40 @@ function renderStudy(deckId) {
     return;
   }
 
-  // init session if needed
-  if (!STUDY || STUDY.deckId !== deckId) {
-    newStudySession(deckId, cards.map((c) => c.id));
+  // Determine mode (all / bookmarks)
+  const hasMode = Object.prototype.hasOwnProperty.call(opts || {}, 'mode');
+  const requestedMode = hasMode ? normalizeStudyMode(opts.mode) : null;
+  const desiredMode = requestedMode || (STUDY && STUDY.deckId === deckId ? STUDY.mode : 'all');
+
+  const desiredIds = getCardIdsForMode(deckId, desiredMode);
+
+  // 북마크 모드인데 북마크가 없으면 안내
+  if (desiredMode === 'bookmarks' && desiredIds.length === 0) {
+    setSubtitle(`${deck.name} · 북마크 학습`);
+    appEl.innerHTML = `
+      <div class="card">
+        <div style="font-weight: 850; font-size: 16px; margin-bottom: 8px;">북마크된 문제가 없습니다</div>
+        <div style="color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
+          학습 화면(★ 버튼)이나 문제 목록에서 북마크를 찍어두면,<br>
+          여기서 북마크만 모아서 회독할 수 있어요.
+        </div>
+        <div class="row" style="gap: 10px; flex-wrap: wrap;">
+          <button class="btn primary" id="go-all">전체 학습하기</button>
+          <button class="btn" id="go-manage">문제 관리</button>
+        </div>
+      </div>
+    `;
+    $('#go-all').addEventListener('click', () => (location.hash = `#/study/${deckId}`));
+    $('#go-manage').addEventListener('click', () => (location.hash = `#/deck/${deckId}`));
+    return;
   }
 
-  setSubtitle(`${deck.name} · 학습`);
+  // init session if needed (or mode changed)
+  if (!STUDY || STUDY.deckId !== deckId || (requestedMode && requestedMode !== STUDY.mode) || (STUDY && STUDY.queue && STUDY.queue.length === 0)) {
+    newStudySession(deckId, desiredMode, desiredIds);
+  }
+
+  setSubtitle(`${deck.name} · ${STUDY.mode === 'bookmarks' ? '북마크 학습' : '학습'}`);
 
   // Summary
   if (STUDY.phase === 'summary') {
@@ -913,7 +1001,7 @@ function renderStudy(deckId) {
     });
 
     $('#btn-restart').addEventListener('click', () => {
-      newStudySession(deckId, cards.map((c) => c.id));
+      newStudySession(deckId, STUDY.mode);
       renderStudy(deckId);
     });
 
@@ -944,12 +1032,16 @@ function renderStudy(deckId) {
 
   const expl = card.explanation?.trim() ? card.explanation.trim() : '(설명 없음)';
   const answered = !!STUDY.answered;
+  const bookmarked = isBookmarked(card.id);
 
   appEl.innerHTML = `
     <div class="study-card">
       <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
         <span class="pill">${pos} / ${total}</span>
-        <span class="pill">틀림 ${STUDY.wrongCount}</span>
+        <div style="display:flex; gap: 8px; align-items:center;">
+          <button class="btn small" id="btn-bookmark">${bookmarked ? '★ 북마크' : '☆ 북마크'}</button>
+          <span class="pill">틀림 ${STUDY.wrongCount}</span>
+        </div>
       </div>
 
       <div class="study-prompt">${escapeText(card.prompt)}</div>
@@ -1002,7 +1094,7 @@ function renderStudy(deckId) {
     const isCorrect = normalized === card.answer;
     STUDY.lastIsCorrect = isCorrect;
 
-    const st = DATA.stats[card.id] || (DATA.stats[card.id] = { correct: 0, wrong: 0, lastReviewed: null });
+    const st = DATA.stats[card.id] || (DATA.stats[card.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false });
 
     if (isCorrect) {
       st.correct = (st.correct || 0) + 1;
@@ -1031,6 +1123,16 @@ function renderStudy(deckId) {
   }
 
   // Events
+  const bmBtn = $('#btn-bookmark');
+  if (bmBtn) {
+    bmBtn.addEventListener('click', () => {
+      const next = toggleBookmark(card.id);
+      toast(next ? '북마크됨' : '북마크 해제');
+      // 북마크 모드에서 북마크가 0이 되면 안내 화면으로 전환될 수 있음
+      renderStudy(deckId);
+    });
+  }
+
   const editBtn = $('#btn-edit');
   if (editBtn) {
     editBtn.addEventListener('click', () => {
@@ -1115,6 +1217,9 @@ function renderImportExport() {
         <input type="file" id="file" accept="application/json" />
       </div>
       <div class="row" style="gap: 10px; flex-wrap: wrap;">
+        <select id="file-target" style="flex: 1; min-width: 180px;">
+          ${deckOptions}
+        </select>
         <button class="btn primary" id="btn-import-file">파일 가져오기</button>
         <button class="btn" id="btn-clear-file">선택 해제</button>
       </div>
@@ -1158,7 +1263,7 @@ function renderImportExport() {
       stats: {},
     };
     exportObj.cards.forEach((c) => {
-      exportObj.stats[c.id] = DATA.stats[c.id] || { correct: 0, wrong: 0, lastReviewed: null };
+      exportObj.stats[c.id] = DATA.stats[c.id] || { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
     });
     const safeName = deck.name.replace(/[^a-zA-Z0-9가-힣_-]+/g, '_');
     downloadJson(`ox-grammar-${safeName}.json`, exportObj);
@@ -1178,7 +1283,8 @@ function renderImportExport() {
     const text = await file.text();
     try {
       const obj = JSON.parse(text);
-      importObject(obj);
+      const targetDeckId = $('#file-target')?.value;
+      importObject(obj, { targetDeckId });
     } catch (e) {
       alert('JSON 파싱에 실패했습니다.');
     }
@@ -1273,7 +1379,7 @@ function importObject(obj, opts = {}) {
         createdAt: now(),
         updatedAt: now(),
       });
-      DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null };
+      DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
     });
 
     commit();
@@ -1386,7 +1492,7 @@ function renderRoute() {
   }
 
   if (head === 'study' && id) {
-    renderStudy(id);
+    renderStudy(id, { mode: query.mode });
     return;
   }
 
