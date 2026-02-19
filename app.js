@@ -3,8 +3,8 @@
   Data is stored in localStorage.
 */
 
-const STORAGE_KEY = 'oxGrammarData.v1';
-const APP_DATA_VERSION = 1;
+const STORAGE_KEY = 'oxGrammarData.v2';
+const APP_DATA_VERSION = 2;
 
 // -------------------------
 // Utils
@@ -66,35 +66,144 @@ function escapeText(s) {
 
 function defaultData() {
   const deckId = uuid();
-  const cardId = uuid();
+
+  // 초기 샘플(원하면 삭제/수정 가능)
+  const baseCards = [
+    {
+      prompt: 'think it better to tell the truth',
+      answer: 'O',
+      explanation: 'think + it(가목적어) + 형용사 + to V 구조',
+      tags: ['5형식', '가목적어'],
+    },
+
+    // who / whom
+    {
+      prompt: 'The man whom I think is honest is my teacher.',
+      answer: 'X',
+      explanation: 'I think (that) he is honest 구조 → he가 주어 → who가 맞음.',
+      tags: ['관계사', 'who/whom'],
+    },
+    {
+      prompt: 'The man whom I met yesterday is my teacher.',
+      answer: 'O',
+      explanation: 'I met him 구조 → him은 목적어 → whom 가능.',
+      tags: ['관계사', 'who/whom'],
+    },
+
+    // 가정법 현재
+    {
+      prompt: 'If I were you, I would accept the offer.',
+      answer: 'O',
+      explanation: '현재 사실 반대 → If + 과거형, would + 동사원형.',
+      tags: ['가정법', '현재'],
+    },
+    {
+      prompt: 'If I was you, I would accept the offer.',
+      answer: 'X',
+      explanation: '가정법에서는 were 사용.',
+      tags: ['가정법', '현재'],
+    },
+
+    // 가정법 과거
+    {
+      prompt: 'If she had studied harder, she would have passed the exam.',
+      answer: 'O',
+      explanation: '과거 사실 반대 → If + had p.p., would have p.p.',
+      tags: ['가정법', '과거'],
+    },
+    {
+      prompt: 'If she would have studied harder, she would have passed the exam.',
+      answer: 'X',
+      explanation: 'if절에 would 사용 불가.',
+      tags: ['가정법', '과거'],
+    },
+
+    // 혼합가정
+    {
+      prompt: 'If I had known the truth, I would tell you now.',
+      answer: 'O',
+      explanation: '과거 조건 → 현재 결과.',
+      tags: ['가정법', '혼합'],
+    },
+    {
+      prompt: 'If I had known the truth, I would have told you now.',
+      answer: 'X',
+      explanation: 'now는 현재 의미 → would + 동사원형이 맞음.',
+      tags: ['가정법', '혼합'],
+    },
+
+    // Only 도치
+    {
+      prompt: 'Only after he left she realized the truth.',
+      answer: 'X',
+      explanation: 'Only + 부사구 문두 → 도치 필요 → did she realize.',
+      tags: ['도치', 'only'],
+    },
+    {
+      prompt: 'Only after he left did she realize the truth.',
+      answer: 'O',
+      explanation: '조동사 did가 주어 앞으로 이동.',
+      tags: ['도치', 'only'],
+    },
+
+    // 분사 ing / p.p.
+    {
+      prompt: 'The law required owners to pay heavy taxes will increase sales.',
+      answer: 'X',
+      explanation: 'required가 동사처럼 작동하여 동사 2개 발생 → requiring이 맞음.',
+      tags: ['분사', 'ing'],
+    },
+    {
+      prompt: 'The law requiring owners to pay heavy taxes will increase sales.',
+      answer: 'O',
+      explanation: 'requiring은 분사수식 → will increase가 주절 동사.',
+      tags: ['분사', 'ing'],
+    },
+    {
+      prompt: 'The law required by citizens was passed.',
+      answer: 'O',
+      explanation: 'required by ~ = 수동 의미 (요구된 법).',
+      tags: ['분사', 'p.p.'],
+    },
+  ];
+
+  const t = now();
+
+  const cards = baseCards.map((c, idx) => {
+    const id = uuid();
+    return {
+      id,
+      deckId,
+      prompt: c.prompt,
+      answer: c.answer,
+      explanation: c.explanation,
+      tags: c.tags || [],
+      createdAt: t + idx,
+      updatedAt: t + idx,
+    };
+  });
+
+  const stats = {};
+  cards.forEach((c) => {
+    stats[c.id] = { correct: 0, wrong: 0, lastReviewed: null };
+  });
+
   return {
     version: APP_DATA_VERSION,
     decks: [
       {
         id: deckId,
         name: '리그래머 1-20',
-        description: '샘플 (원하면 삭제 가능)',
-        createdAt: now(),
+        description: 'who/whom · 가정법 · 도치 · 분사',
+        createdAt: t,
         order: 1,
       },
     ],
-    cards: [
-      {
-        id: cardId,
-        deckId,
-        prompt: 'think it better to tell the truth',
-        answer: 'O',
-        explanation: 'think + it(가목적어) + 형용사 + to V 구조',
-        tags: ['5형식', '가목적어'],
-        createdAt: now(),
-        updatedAt: now(),
-      },
-    ],
-    stats: {
-      [cardId]: { correct: 0, wrong: 0, lastReviewed: null },
-    },
+    cards,
+    stats,
   };
 }
+
 
 function loadData() {
   try {
@@ -312,8 +421,8 @@ function renderHome() {
     <div class="card">
       <div style="font-weight: 750; margin-bottom: 8px;">빠른 시작</div>
       <div style="font-size: 13px; color: var(--muted); line-height: 1.5;">
-        · 문장을 보고 스스로 O/X 판단 → <span class="kbd">정답 보기</span> → 맞았으면 <span class="kbd">맞춤(O)</span>, 틀렸으면 <span class="kbd">틀림(X)</span>.<br>
-        · 끝나면 틀린 것만 모아서 다시 회독할 수 있어요.
+        · 문장을 보고 <span class="kbd">O</span> 또는 <span class="kbd">X</span> 선택 → 정답/해설 확인 → <span class="kbd">다음</span>.<br>
+        · 끝나면 <b>틀린 것만 다시</b> 모아서 반복할 수 있어요.
       </div>
     </div>
   `;
@@ -716,12 +825,25 @@ function newStudySession(deckId, cardIds) {
     phase: 'study',
     queue: shuffle(cardIds),
     index: 0,
-    revealed: false,
+
+    // per-card
+    answered: false,
+    choice: null, // 'O' | 'X'
+    lastIsCorrect: null,
+
+    // session
     wrongIds: [],
     correctCount: 0,
     wrongCount: 0,
     mode: 'all',
   };
+}
+
+function resetPerCardState() {
+  if (!STUDY) return;
+  STUDY.answered = false;
+  STUDY.choice = null;
+  STUDY.lastIsCorrect = null;
 }
 
 function renderStudy(deckId) {
@@ -758,11 +880,13 @@ function renderStudy(deckId) {
   // Summary
   if (STUDY.phase === 'summary') {
     const total = STUDY.correctCount + STUDY.wrongCount;
+    const acc = total === 0 ? 0 : Math.round((STUDY.correctCount / total) * 100);
+
     appEl.innerHTML = `
       <div class="card">
         <div style="font-weight: 850; font-size: 18px;">학습 완료</div>
         <div style="margin-top: 10px; color: var(--muted); line-height: 1.6;">
-          총 ${total}개 중 <b>맞춤 ${STUDY.correctCount}</b>, <b>틀림 ${STUDY.wrongCount}</b>
+          총 ${total}개 중 <b>맞춤 ${STUDY.correctCount}</b>, <b>틀림 ${STUDY.wrongCount}</b> · 정답률 <b>${acc}%</b>
         </div>
         <div class="hr"></div>
         <div class="row" style="gap: 10px; flex-wrap: wrap;">
@@ -778,10 +902,13 @@ function renderStudy(deckId) {
       STUDY.phase = 'study';
       STUDY.queue = shuffle(STUDY.wrongIds);
       STUDY.index = 0;
-      STUDY.revealed = false;
+      resetPerCardState();
+
+      // 새 세션처럼 카운트 리셋
       STUDY.wrongIds = [];
       STUDY.correctCount = 0;
       STUDY.wrongCount = 0;
+
       renderStudy(deckId);
     });
 
@@ -800,12 +927,14 @@ function renderStudy(deckId) {
   // Current card
   const cardId = STUDY.queue[STUDY.index];
   const card = DATA.cards.find((c) => c.id === cardId);
+
   if (!card) {
     // Card deleted while studying; skip
     STUDY.queue.splice(STUDY.index, 1);
     if (STUDY.index >= STUDY.queue.length) {
       STUDY.phase = 'summary';
     }
+    resetPerCardState();
     renderStudy(deckId);
     return;
   }
@@ -814,6 +943,7 @@ function renderStudy(deckId) {
   const total = STUDY.queue.length;
 
   const expl = card.explanation?.trim() ? card.explanation.trim() : '(설명 없음)';
+  const answered = !!STUDY.answered;
 
   appEl.innerHTML = `
     <div class="study-card">
@@ -824,56 +954,56 @@ function renderStudy(deckId) {
 
       <div class="study-prompt">${escapeText(card.prompt)}</div>
 
-      <div id="reveal-block" class="${STUDY.revealed ? '' : 'hidden'}">
-        <div class="study-answer">
-          <div class="answer-badge">${escapeText(card.answer)}</div>
-          <div>정답: <b>${escapeText(card.answer)}</b></div>
+      ${answered ? `
+        <div class="card" style="margin: 10px 0 12px; background: var(--card);">
+          <div style="font-weight: 900; margin-bottom: 8px;">
+            ${STUDY.lastIsCorrect ? '✅ 정답' : '❌ 오답'}
+          </div>
+          <div class="study-answer" style="margin-bottom: 8px;">
+            <div class="answer-badge">${escapeText(card.answer)}</div>
+            <div>내 선택: <b>${escapeText(STUDY.choice)}</b> · 정답: <b>${escapeText(card.answer)}</b></div>
+          </div>
+          <div class="study-expl">${escapeText(expl)}</div>
         </div>
-        <div class="study-expl">${escapeText(expl)}</div>
 
+        <button class="btn primary block" id="btn-next">다음</button>
+
+        <div style="margin-top: 10px; display:flex; gap: 8px; justify-content: space-between; flex-wrap: wrap;">
+          <button class="btn small" id="btn-edit">이 문제 수정</button>
+          <button class="btn small" id="btn-skip">건너뛰기</button>
+        </div>
+      ` : `
         <div class="big-actions">
-          <button class="btn primary big-btn" id="btn-right">맞춤(O)</button>
-          <button class="btn danger big-btn" id="btn-wrong">틀림(X)</button>
+          <button class="btn primary big-btn" id="btn-choose-o">O</button>
+          <button class="btn danger big-btn" id="btn-choose-x">X</button>
         </div>
 
         <div style="margin-top: 10px; display:flex; gap: 8px; justify-content: space-between; flex-wrap: wrap;">
           <button class="btn small" id="btn-edit">이 문제 수정</button>
           <button class="btn small" id="btn-skip">건너뛰기</button>
         </div>
-      </div>
 
-      <button class="btn primary block" id="btn-reveal" style="${STUDY.revealed ? 'display:none;' : ''}">
-        정답 보기
-      </button>
-
-      <div style="margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.4;">
-        흐름: 문장 확인 → 정답 보기 → (내가) 맞춤/틀림 체크
-      </div>
+        <div style="margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.4;">
+          O/X를 선택하면 정답과 해설이 표시됩니다.
+        </div>
+      `}
     </div>
   `;
 
-  $('#btn-reveal').addEventListener('click', () => {
-    STUDY.revealed = true;
-    renderStudy(deckId);
-  });
-
-    // --- NEW: 선택 결과를 화면에 유지 + 다음 버튼으로 이동 ---
-  STUDY.answered = STUDY.answered || false;
-  STUDY.userChoice = STUDY.userChoice || null;
-  STUDY.lastIsCorrect = STUDY.lastIsCorrect || null;
-
-  function applyResult(choice) {
-    // 이미 답한 문제면 중복 카운트 방지
+  function grade(choice) {
     if (STUDY.answered) return;
 
-    STUDY.userChoice = choice; // 'O' or 'X'
-    STUDY.revealed = true;
+    const normalized = normalizeAnswer(choice);
+    if (!normalized) return;
+
+    STUDY.choice = normalized; // 'O' | 'X'
     STUDY.answered = true;
 
-    const isCorrect = (choice === card.answer);
+    const isCorrect = normalized === card.answer;
     STUDY.lastIsCorrect = isCorrect;
 
     const st = DATA.stats[card.id] || (DATA.stats[card.id] = { correct: 0, wrong: 0, lastReviewed: null });
+
     if (isCorrect) {
       st.correct = (st.correct || 0) + 1;
       STUDY.correctCount += 1;
@@ -882,50 +1012,58 @@ function renderStudy(deckId) {
       STUDY.wrongCount += 1;
       STUDY.wrongIds.push(card.id);
     }
+
     st.lastReviewed = now();
     commit();
 
-    // 화면에 머무르고(= 다음으로 안 감), 설명을 읽게 함
     renderStudy(deckId);
   }
 
   function goNext() {
     STUDY.index += 1;
-    STUDY.revealed = false;
-    STUDY.answered = false;
-    STUDY.userChoice = null;
-    STUDY.lastIsCorrect = null;
+    resetPerCardState();
 
     if (STUDY.index >= STUDY.queue.length) {
       STUDY.phase = 'summary';
     }
+
     renderStudy(deckId);
   }
 
-  // 버튼 이벤트 재연결
-  $('#btn-reveal')?.addEventListener('click', () => {
-    STUDY.revealed = true;
-    renderStudy(deckId);
-  });
+  // Events
+  const editBtn = $('#btn-edit');
+  if (editBtn) {
+    editBtn.addEventListener('click', () => {
+      location.hash = `#/deck/${deckId}?edit=${card.id}`;
+    });
+  }
 
-  $('#btn-right').addEventListener('click', () => applyResult('O'));
-  $('#btn-wrong').addEventListener('click', () => applyResult('X'));
+  const skipBtn = $('#btn-skip');
+  if (skipBtn) {
+    skipBtn.addEventListener('click', () => {
+      // 답을 이미 봤/선택했으면 다음으로
+      if (STUDY.answered) {
+        goNext();
+        return;
+      }
 
-  // “다음” 버튼이 없으면 skip을 다음으로 사용(UI는 그대로 두고 기능만 변경)
-  $('#btn-skip').addEventListener('click', () => {
-    // 답한 상태면 다음으로, 답 안 했으면 기존처럼 뒤로 보내기
-    if (STUDY.answered || STUDY.revealed) {
-      goNext();
-      return;
-    }
-    STUDY.queue.push(STUDY.queue.splice(STUDY.index, 1)[0]);
-    STUDY.revealed = false;
-    renderStudy(deckId);
-  });
+      // 답하기 전 스킵: 이 카드를 뒤로 미룸(점수 반영 X)
+      STUDY.queue.push(STUDY.queue.splice(STUDY.index, 1)[0]);
+      resetPerCardState();
+      renderStudy(deckId);
+    });
+  }
 
-  $('#btn-edit').addEventListener('click', () => {
-    location.hash = `#/deck/${deckId}?edit=${card.id}`;
-  });
+  const chooseO = $('#btn-choose-o');
+  if (chooseO) chooseO.addEventListener('click', () => grade('O'));
+
+  const chooseX = $('#btn-choose-x');
+  if (chooseX) chooseX.addEventListener('click', () => grade('X'));
+
+  const nextBtn = $('#btn-next');
+  if (nextBtn) nextBtn.addEventListener('click', goNext);
+}
+
 
 // -------------------------
 // Import / Export
@@ -1159,7 +1297,7 @@ function renderAbout() {
       <div style="font-weight: 850; font-size: 16px; margin-bottom: 10px;">이 앱은 어떤 방식인가요?</div>
       <div style="font-size: 13px; color: var(--muted); line-height: 1.7;">
         · 단어장 앱(Vocat)에서 문장→정답(O/X)→설명으로 만들어 회독하는 방식을 전용 앱으로 만든 버전입니다.<br>
-        · 문장을 보고 스스로 판단한 뒤 정답을 확인하고, 내가 맞았는지/틀렸는지 체크합니다.<br>
+        · 문장을 보고 <b>O/X를 선택</b>하면 정답·해설이 나오고, 맞춤/틀림이 자동 기록됩니다.<br>
         · 세션이 끝나면 틀린 것만 다시 모아서 반복할 수 있습니다.
       </div>
 

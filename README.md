@@ -13,7 +13,7 @@ Vocat에서 하던 방식(문장 → O/X → 설명)을 전용 앱으로 만든 
 python -m http.server 8000
 ```
 
-브라우저에서 `http://localhost:8000/ox-grammar-pwa/` 접속
+브라우저에서 `http://localhost:8000/` 접속
 
 ### Node
 
