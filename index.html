@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#ffffff" />
+  <title>OX 문법</title>
+
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <noscript>이 앱은 자바스크립트가 필요합니다.</noscript>
+
+  <header class="app-header">
+    <button id="nav-back" class="icon-btn" aria-label="뒤로" title="뒤로">←</button>
+    <div class="header-title">
+      <div class="app-name">OX 문법</div>
+      <div id="header-subtitle" class="subtitle"></div>
+    </div>
+    <button id="nav-menu" class="icon-btn" aria-label="메뉴" title="메뉴">☰</button>
+  </header>
+
+  <nav id="drawer" class="drawer hidden" aria-label="메뉴">
+    <div class="drawer-inner">
+      <button class="drawer-item" data-nav="#/">홈</button>
+      <button class="drawer-item" data-nav="#/import">가져오기/내보내기</button>
+      <button class="drawer-item" data-nav="#/about">도움말</button>
+      <div class="drawer-sep"></div>
+      <button id="btn-reset" class="drawer-item danger">전체 초기화</button>
+      <div class="drawer-foot">오프라인 저장 · PWA</div>
+    </div>
+  </nav>
+
+  <main id="app" class="app-main"></main>
+
+  <div id="modal-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div id="modal" class="modal"></div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script type="module" src="./app.js"></script>
+  <script>
+    // Register service worker for offline support (works only on https or localhost)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
