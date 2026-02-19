@@ -857,7 +857,22 @@ function renderStudy(deckId) {
     renderStudy(deckId);
   });
 
-  function mark(isCorrect) {
+    // --- NEW: 선택 결과를 화면에 유지 + 다음 버튼으로 이동 ---
+  STUDY.answered = STUDY.answered || false;
+  STUDY.userChoice = STUDY.userChoice || null;
+  STUDY.lastIsCorrect = STUDY.lastIsCorrect || null;
+
+  function applyResult(choice) {
+    // 이미 답한 문제면 중복 카운트 방지
+    if (STUDY.answered) return;
+
+    STUDY.userChoice = choice; // 'O' or 'X'
+    STUDY.revealed = true;
+    STUDY.answered = true;
+
+    const isCorrect = (choice === card.answer);
+    STUDY.lastIsCorrect = isCorrect;
+
     const st = DATA.stats[card.id] || (DATA.stats[card.id] = { correct: 0, wrong: 0, lastReviewed: null });
     if (isCorrect) {
       st.correct = (st.correct || 0) + 1;
@@ -870,30 +885,47 @@ function renderStudy(deckId) {
     st.lastReviewed = now();
     commit();
 
-    // next
+    // 화면에 머무르고(= 다음으로 안 감), 설명을 읽게 함
+    renderStudy(deckId);
+  }
+
+  function goNext() {
     STUDY.index += 1;
     STUDY.revealed = false;
+    STUDY.answered = false;
+    STUDY.userChoice = null;
+    STUDY.lastIsCorrect = null;
+
     if (STUDY.index >= STUDY.queue.length) {
       STUDY.phase = 'summary';
     }
     renderStudy(deckId);
   }
 
-  $('#btn-right').addEventListener('click', () => mark(true));
-  $('#btn-wrong').addEventListener('click', () => mark(false));
+  // 버튼 이벤트 재연결
+  $('#btn-reveal')?.addEventListener('click', () => {
+    STUDY.revealed = true;
+    renderStudy(deckId);
+  });
 
+  $('#btn-right').addEventListener('click', () => applyResult('O'));
+  $('#btn-wrong').addEventListener('click', () => applyResult('X'));
+
+  // “다음” 버튼이 없으면 skip을 다음으로 사용(UI는 그대로 두고 기능만 변경)
   $('#btn-skip').addEventListener('click', () => {
-    // Move this card to end
+    // 답한 상태면 다음으로, 답 안 했으면 기존처럼 뒤로 보내기
+    if (STUDY.answered || STUDY.revealed) {
+      goNext();
+      return;
+    }
     STUDY.queue.push(STUDY.queue.splice(STUDY.index, 1)[0]);
     STUDY.revealed = false;
     renderStudy(deckId);
   });
 
   $('#btn-edit').addEventListener('click', () => {
-    // Go to manage screen and open edit modal
     location.hash = `#/deck/${deckId}?edit=${card.id}`;
   });
-}
 
 // -------------------------
 // Import / Export
