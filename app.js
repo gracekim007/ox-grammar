@@ -50,6 +50,14 @@ function normalizeAnswer(v) {
   return null;
 }
 
+function normalizePromptKey(s) {
+  // Used for de-duplication (vocab import). Case-insensitive + collapse spaces.
+  return String(s ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
 function escapeText(s) {
   // For safety when interpolating into HTML.
   return String(s ?? '')
@@ -197,6 +205,7 @@ function defaultData() {
         description: 'who/whom · 가정법 · 도치 · 분사',
         createdAt: t,
         order: 1,
+        type: 'grammar',
       },
     ],
     cards,
@@ -228,26 +237,53 @@ function normalizeData(data) {
   if (!d.stats || typeof d.stats !== 'object') d.stats = {};
   if (!d.version) d.version = APP_DATA_VERSION;
 
-  // Ensure order exists
+  // Ensure deck shape (including type)
   d.decks.forEach((deck, idx) => {
     if (!deck.id) deck.id = uuid();
     if (!deck.name) deck.name = `카테고리 ${idx + 1}`;
     if (deck.order == null) deck.order = idx + 1;
     if (!deck.createdAt) deck.createdAt = now();
+
+    // deck.type: 'grammar' | 'vocab'
+    const dt = String(deck.type || '').toLowerCase();
+    deck.type = dt === 'vocab' ? 'vocab' : 'grammar';
+
+    if (deck.description == null) deck.description = '';
   });
 
   // Ensure card shape & stats
   d.cards.forEach((c) => {
     if (!c.id) c.id = uuid();
+
+    // Attach to a deck if missing
     if (!c.deckId) {
-      // If missing deck, attach to first deck (or create one)
       if (!d.decks[0]) {
-        d.decks.push({ id: uuid(), name: '기본', description: '', createdAt: now(), order: 1 });
+        d.decks.push({ id: uuid(), name: '기본', description: '', createdAt: now(), order: 1, type: 'grammar' });
       }
       c.deckId = d.decks[0].id;
     }
+
     if (!c.prompt) c.prompt = '';
+
+    const deck = d.decks.find((x) => x.id === c.deckId) || null;
+    const isVocabDeck = !!deck && deck.type === 'vocab';
+
+    // Normalize answer
     c.answer = normalizeAnswer(c.answer) || 'O';
+    if (isVocabDeck) c.answer = 'O'; // vocab deck: answer has no meaning (self-check)
+
+    // vocab fields (optional)
+    if (typeof c.meaning !== 'string') c.meaning = '';
+    if (typeof c.mnemonic !== 'string') c.mnemonic = '';
+    if (typeof c.example !== 'string') c.example = '';
+
+    // Backward compatibility:
+    // - Some vocab cards may have meaning stored in explanation
+    if (isVocabDeck) {
+      if (!c.meaning && c.explanation) c.meaning = String(c.explanation || '').trim();
+      if (c.meaning && !c.explanation) c.explanation = String(c.meaning || '').trim();
+    }
+
     if (!Array.isArray(c.tags)) c.tags = [];
     if (!c.createdAt) c.createdAt = now();
     if (!c.updatedAt) c.updatedAt = now();
@@ -255,7 +291,7 @@ function normalizeData(data) {
     if (!d.stats[c.id]) d.stats[c.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
     if (typeof d.stats[c.id].bookmark !== 'boolean') d.stats[c.id].bookmark = false;
 
-    // Bookmark 호환성
+    // Bookmark compatibility:
     // - v3: stats[cardId].bookmark
     // - v4+: card.bookmarked
     if (typeof c.bookmarked === 'boolean') {
@@ -273,6 +309,7 @@ function normalizeData(data) {
 
   return d;
 }
+
 
 let DATA = loadData();
 
@@ -465,9 +502,10 @@ function renderHome() {
     <div class="card">
       <div style="font-weight: 750; margin-bottom: 8px;">빠른 시작</div>
       <div style="font-size: 13px; color: var(--muted); line-height: 1.5;">
-        · 문장을 보고 <span class="kbd">O</span> 또는 <span class="kbd">X</span> 선택 → 정답/해설 확인 → <span class="kbd">다음</span>.<br>
-        · 끝나면 <b>틀린 것만 다시</b> 모아서 반복할 수 있어요.
-        <br>· <b>북마크</b> / <b>오답</b> 버튼으로 모아 학습도 가능해요.
+        · <b>문법 OX</b>: 문장을 보고 <span class="kbd">O</span>/<span class="kbd">X</span> 선택 → 정답/해설 확인 → <span class="kbd">다음</span>.<br>
+        · <b>단어장</b>: 단어를 보고 <span class="kbd">O</span>(앎)/<span class="kbd">X</span>(모름) 선택 → 뜻/연상/예문 확인 → <span class="kbd">다음</span>.<br>
+        · 끝나면 <b>틀린/모르는 것만 다시</b> 모아서 반복할 수 있어요.
+        <br>· <b>북마크</b> / <b>오답(모름)</b> 버튼으로 모아 학습도 가능해요.
       </div>
     </div>
   `;
@@ -483,14 +521,21 @@ function renderHome() {
   }
 
   decks.forEach((deck) => {
+    const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+
     const s = deckStats(deck.id);
     const bmCount = deckBookmarkCount(deck.id);
     const wrongCount = deckWrongCount(deck.id);
+
+    const labelCards = isVocab ? '단어' : '문제';
+    const labelWrong = isVocab ? '모름' : '오답';
+    const labelAcc = isVocab ? '알았음률' : '정답률';
+
     const meta = [
-      `문제 ${s.cardsCount}개`,
+      `${labelCards} ${s.cardsCount}개`,
       bmCount ? `북마크 ${bmCount}개` : null,
-      wrongCount ? `오답 ${wrongCount}개` : null,
-      s.acc == null ? '기록 없음' : `정답률 ${s.acc}% (기록 ${s.total}회)`
+      wrongCount ? `${labelWrong} ${wrongCount}개` : null,
+      s.acc == null ? '기록 없음' : `${labelAcc} ${s.acc}% (기록 ${s.total}회)`
     ].filter(Boolean).join(' · ');
 
     const el = document.createElement('div');
@@ -501,10 +546,11 @@ function renderHome() {
       <div class="deck-actions">
         <button class="btn primary small" data-action="study">학습</button>
         <button class="btn small" data-action="bm" ${bmCount ? '' : 'disabled'}>북마크</button>
-        <button class="btn small" data-action="wrong" ${wrongCount ? '' : 'disabled'}>오답</button>
+        <button class="btn small" data-action="wrong" ${wrongCount ? '' : 'disabled'}>${escapeText(labelWrong)}</button>
         <button class="btn small" data-action="manage">관리</button>
       </div>
     `;
+
     el.querySelector('[data-action="study"]').addEventListener('click', () => {
       location.hash = `#/study/${deck.id}`;
     });
@@ -520,25 +566,38 @@ function renderHome() {
     el.querySelector('[data-action="manage"]').addEventListener('click', () => {
       location.hash = `#/deck/${deck.id}`;
     });
+
     grid.appendChild(el);
   });
 }
 
+
 function openDeckModal(existingDeck = null) {
   const isEdit = !!existingDeck;
-  const deck = existingDeck || { name: '', description: '' };
+  const deck = existingDeck || { name: '', description: '', type: 'grammar' };
+  const curType = String(deck.type || '').toLowerCase() === 'vocab' ? 'vocab' : 'grammar';
 
   openModal({
     title: isEdit ? '카테고리 수정' : '새 카테고리',
     bodyHTML: `
       <div class="field">
         <label>이름</label>
-        <input type="text" id="deck-name" placeholder="예) 리그래머 1-20" value="${escapeText(deck.name)}" />
+        <input type="text" id="deck-name" placeholder="예) 리그래머 1-20 / 경선식 단어장" value="${escapeText(deck.name)}" />
       </div>
+
+      <div class="field">
+        <label>유형</label>
+        <select id="deck-type">
+          <option value="grammar" ${curType === 'grammar' ? 'selected' : ''}>문법 OX (정답 있음)</option>
+          <option value="vocab" ${curType === 'vocab' ? 'selected' : ''}>단어장 (O=앎 / X=모름)</option>
+        </select>
+      </div>
+
       <div class="field">
         <label>설명 (선택)</label>
-        <textarea id="deck-desc" placeholder="예) 5형식/가목적어 회독">${escapeText(deck.description || '')}</textarea>
+        <textarea id="deck-desc" placeholder="예) who/whom · 가정법 / 또는 경선식 연상">${escapeText(deck.description || '')}</textarea>
       </div>
+
       <div class="modal-actions">
         <button class="btn" id="deck-cancel">취소</button>
         <button class="btn primary" id="deck-save">저장</button>
@@ -549,28 +608,36 @@ function openDeckModal(existingDeck = null) {
       $('#deck-save', root).addEventListener('click', () => {
         const name = $('#deck-name', root).value.trim();
         const description = $('#deck-desc', root).value.trim();
+        const typeRaw = $('#deck-type', root).value;
+        const type = String(typeRaw).toLowerCase() === 'vocab' ? 'vocab' : 'grammar';
+
         if (!name) {
           alert('카테고리 이름을 입력해 주세요.');
           return;
         }
+
         if (isEdit) {
           const d = getDeck(existingDeck.id);
           if (!d) return;
           d.name = name;
           d.description = description;
+          d.type = type;
         } else {
           const nextOrder = (Math.max(0, ...DATA.decks.map((d) => d.order || 0)) + 1) || 1;
-          DATA.decks.push({ id: uuid(), name, description, createdAt: now(), order: nextOrder });
+          DATA.decks.push({ id: uuid(), name, description, type, createdAt: now(), order: nextOrder });
         }
+
         commit();
         closeModal();
         toast('저장됨');
         renderRoute();
       });
+
       setTimeout(() => $('#deck-name', root).focus(), 0);
     },
   });
 }
+
 
 function renderDeck(deckId) {
   const deck = getDeck(deckId);
@@ -580,12 +647,19 @@ function renderDeck(deckId) {
     return;
   }
 
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+
+  const labelCards = isVocab ? '단어' : '문제';
+  const labelCorrect = isVocab ? '알았음' : '맞춤';
+  const labelWrong = isVocab ? '모름' : '틀림';
+  const labelWrongOnly = isVocab ? '모름' : '오답';
+
   const cards = getCards(deckId);
   const s = deckStats(deckId);
   const bmCount = deckBookmarkCount(deckId);
   const wrongCount = deckWrongCount(deckId);
 
-  setSubtitle(`${deck.name} · 문제 ${s.cardsCount}개`);
+  setSubtitle(`${deck.name} · ${labelCards} ${s.cardsCount}개`);
 
   appEl.innerHTML = `
     <div class="card" style="margin-bottom: 12px;">
@@ -593,12 +667,14 @@ function renderDeck(deckId) {
         <div>
           <div style="font-weight: 800; font-size: 16px;">${escapeText(deck.name)}</div>
           <div style="color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.4;">${escapeText(deck.description || '')}</div>
-          <div style="margin-top: 10px; font-size: 12px; color: var(--muted);">기록: 맞춤 ${s.correct} · 틀림 ${s.wrong} · 오답 ${wrongCount} · 북마크 ${bmCount}</div>
+          <div style="margin-top: 10px; font-size: 12px; color: var(--muted);">
+            기록: ${labelCorrect} ${s.correct} · ${labelWrong} ${s.wrong} · ${labelWrongOnly} ${wrongCount} · 북마크 ${bmCount}
+          </div>
         </div>
         <div style="display:flex; flex-direction: column; gap: 8px; min-width: 140px;">
           <button class="btn primary small" id="btn-study">전체 학습</button>
           <button class="btn small" id="btn-study-bookmarks" ${bmCount ? '' : 'disabled'}>북마크 학습 (${bmCount})</button>
-          <button class="btn small" id="btn-study-wrongs" ${wrongCount ? '' : 'disabled'}>오답 학습 (${wrongCount})</button>
+          <button class="btn small" id="btn-study-wrongs" ${wrongCount ? '' : 'disabled'}>${labelWrongOnly} 학습 (${wrongCount})</button>
           <button class="btn small" id="btn-edit-deck">카테고리 수정</button>
           <button class="btn danger small" id="btn-delete-deck">카테고리 삭제</button>
         </div>
@@ -606,23 +682,23 @@ function renderDeck(deckId) {
     </div>
 
     <div class="row" style="justify-content: space-between; gap: 10px;">
-      <button class="btn primary" id="btn-add-card">+ 문제 추가</button>
+      <button class="btn primary" id="btn-add-card">+ ${labelCards} 추가</button>
       <button class="btn" id="btn-bulk-add">여러 개 붙여넣기</button>
     </div>
 
     <div class="field" style="margin-top: 12px;">
       <label>검색</label>
-      <input type="text" id="search" placeholder="문장/설명/태그 검색" />
+      <input type="text" id="search" placeholder="${isVocab ? '단어/뜻/연상/예문/태그 검색' : '문장/설명/태그 검색'}" />
     </div>
 
-    <div class="section-title">문제 목록</div>
+    <div class="section-title">${labelCards} 목록</div>
     <div class="list" id="card-list"></div>
   `;
 
   $('#btn-study').addEventListener('click', () => (location.hash = `#/study/${deckId}`));
   $('#btn-study-bookmarks').addEventListener('click', () => {
     if (!bmCount) {
-      toast('북마크된 문제가 없습니다');
+      toast('북마크된 카드가 없습니다');
       return;
     }
     location.hash = `#/study/${deckId}?mode=bookmarks`;
@@ -632,16 +708,18 @@ function renderDeck(deckId) {
   if (wrongBtn) {
     wrongBtn.addEventListener('click', () => {
       if (!wrongCount) {
-        toast('틀린 문제가 없습니다');
+        toast(isVocab ? '모르는 카드가 없습니다' : '틀린 문제가 없습니다');
         return;
       }
       location.hash = `#/study/${deckId}?mode=wrongs`;
     });
   }
+
   $('#btn-edit-deck').addEventListener('click', () => openDeckModal(deck));
+
   $('#btn-delete-deck').addEventListener('click', () => {
     if (cards.length > 0) {
-      const ok = confirm('이 카테고리의 문제도 함께 삭제됩니다. 계속할까요?');
+      const ok = confirm('이 카테고리의 카드도 함께 삭제됩니다. 계속할까요?');
       if (!ok) return;
     } else {
       const ok = confirm('카테고리를 삭제할까요?');
@@ -665,12 +743,19 @@ function renderDeck(deckId) {
     const filtered = !q
       ? cards
       : cards.filter((c) => {
-          const hay = `${c.prompt}\n${c.explanation || ''}\n${(c.tags || []).join(',')}`.toLowerCase();
+          const meaning = String(c.meaning || c.explanation || '').trim();
+          const mnemonic = String(c.mnemonic || '').trim();
+          const example = String(c.example || '').trim();
+
+          const hay = isVocab
+            ? `${c.prompt}\n${meaning}\n${mnemonic}\n${example}\n${(c.tags || []).join(',')}`.toLowerCase()
+            : `${c.prompt}\n${c.explanation || ''}\n${(c.tags || []).join(',')}`.toLowerCase();
+
           return hay.includes(q);
         });
 
     if (filtered.length === 0) {
-      listEl.innerHTML = `<div class="card">표시할 문제가 없습니다.</div>`;
+      listEl.innerHTML = `<div class="card">표시할 카드가 없습니다.</div>`;
       return;
     }
 
@@ -682,23 +767,33 @@ function renderDeck(deckId) {
         const st = DATA.stats[c.id] || { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
         const bm = isBookmarked(c.id);
         const total = (st.correct || 0) + (st.wrong || 0);
-        const acc = total === 0 ? '' : ` · 정답률 ${Math.round(((st.correct || 0) / total) * 100)}%`;
+        const acc = total === 0 ? '' : ` · ${isVocab ? '알았음률' : '정답률'} ${Math.round(((st.correct || 0) / total) * 100)}%`;
         const tags = (c.tags || []).slice(0, 3).join(', ');
+
+        const meaning = String(c.meaning || c.explanation || '').trim();
+        const meaningPreview = isVocab && meaning
+          ? ` · 뜻 ${escapeText(meaning.length > 44 ? meaning.slice(0, 44) + '…' : meaning)}`
+          : '';
+
+        const sub = isVocab
+          ? `기록 ${total}회 · 알았음 ${(st.correct || 0)} · 모름 ${(st.wrong || 0)}${acc}${tags ? ` · 태그 ${escapeText(tags)}` : ''}${meaningPreview}`
+          : `정답 ${escapeText(c.answer)} · 기록 ${total}회${escapeText(acc)}${tags ? ` · 태그 ${escapeText(tags)}` : ''}`;
 
         const row = document.createElement('div');
         row.className = 'item';
         row.innerHTML = `
           <div>
             <div class="item-title">${escapeText(c.prompt)}</div>
-            <div class="item-sub">정답 ${escapeText(c.answer)} · 기록 ${total}회${escapeText(acc)}${tags ? ` · 태그 ${escapeText(tags)}` : ''}</div>
+            <div class="item-sub">${sub}</div>
           </div>
           <div class="item-actions">
             <button class="btn small" data-bm title="북마크">${bm ? '★' : '☆'}</button>
-            <span class="pill">${escapeText(c.answer)}</span>
+            ${isVocab ? '' : `<span class="pill">${escapeText(c.answer)}</span>`}
             <button class="btn small" data-edit>수정</button>
             <button class="btn small danger" data-del>삭제</button>
           </div>
         `;
+
         $('[data-bm]', row).addEventListener('click', () => {
           const next = toggleBookmark(c.id);
           toast(next ? '북마크됨' : '북마크 해제');
@@ -706,17 +801,17 @@ function renderDeck(deckId) {
         });
         $('[data-edit]', row).addEventListener('click', () => openCardModal({ deckId, card: c }));
         $('[data-del]', row).addEventListener('click', () => {
-          const ok = confirm('이 문제를 삭제할까요?');
+          const ok = confirm('이 카드를 삭제할까요?');
           if (!ok) return;
           DATA.cards = DATA.cards.filter((x) => x.id !== c.id);
           delete DATA.stats[c.id];
           commit();
           toast('삭제됨');
-          // update local card list
           const idx = cards.findIndex((x) => x.id === c.id);
           if (idx >= 0) cards.splice(idx, 1);
           renderList();
         });
+
         listEl.appendChild(row);
       });
   }
@@ -725,13 +820,54 @@ function renderDeck(deckId) {
   renderList();
 }
 
+
 function openCardModal({ deckId, card }) {
+  const deck = getDeck(deckId);
+  if (!deck) {
+    alert('대상 카테고리를 찾을 수 없습니다.');
+    return;
+  }
+
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
   const isEdit = !!card;
-  const c = card || { prompt: '', answer: 'O', explanation: '', tags: [] };
+
+  const c = card || (isVocab
+    ? { prompt: '', meaning: '', mnemonic: '', example: '', tags: [] }
+    : { prompt: '', answer: 'O', explanation: '', tags: [] }
+  );
+
+  const meaningVal = isVocab ? String(c.meaning || c.explanation || '') : '';
+  const mnemonicVal = isVocab ? String(c.mnemonic || '') : '';
+  const exampleVal = isVocab ? String(c.example || '') : '';
 
   openModal({
-    title: isEdit ? '문제 수정' : '새 문제',
-    bodyHTML: `
+    title: isEdit ? (isVocab ? '단어 수정' : '문제 수정') : (isVocab ? '새 단어' : '새 문제'),
+    bodyHTML: isVocab ? `
+      <div class="field">
+        <label>단어</label>
+        <input type="text" id="card-prompt" placeholder="예) avalanche" value="${escapeText(c.prompt)}" />
+      </div>
+      <div class="field">
+        <label>뜻 (품사 포함)</label>
+        <textarea id="card-meaning" placeholder="예) n. 눈사태; 산사태; 쇄도">${escapeText(meaningVal)}</textarea>
+      </div>
+      <div class="field">
+        <label>연상문장/경선식 (선택)</label>
+        <textarea id="card-mnemonic" placeholder="예) 아~ 발 안 차! 눈사태(쇄도)처럼 몰려온다">${escapeText(mnemonicVal)}</textarea>
+      </div>
+      <div class="field">
+        <label>예문 (선택)</label>
+        <textarea id="card-example" placeholder="예) An avalanche of complaints followed.">${escapeText(exampleVal)}</textarea>
+      </div>
+      <div class="field">
+        <label>태그 (쉼표로 구분, 선택)</label>
+        <input type="text" id="card-tags" placeholder="예) vocab, 경선식" value="${escapeText((c.tags || []).join(', '))}" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="card-cancel">취소</button>
+        <button class="btn primary" id="card-save">저장</button>
+      </div>
+    ` : `
       <div class="field">
         <label>문장 (영문)</label>
         <textarea id="card-prompt" placeholder="예) think it better to tell the truth">${escapeText(c.prompt)}</textarea>
@@ -758,42 +894,85 @@ function openCardModal({ deckId, card }) {
     `,
     onMount: (root) => {
       $('#card-cancel', root).addEventListener('click', closeModal);
+
       $('#card-save', root).addEventListener('click', () => {
         const prompt = $('#card-prompt', root).value.trim();
-        const answer = normalizeAnswer($('#card-answer', root).value) || 'O';
-        const explanation = $('#card-expl', root).value.trim();
+        if (!prompt) {
+          alert(isVocab ? '단어를 입력해 주세요.' : '문장을 입력해 주세요.');
+          return;
+        }
+
         const tags = $('#card-tags', root)
           .value
           .split(',')
           .map((t) => t.trim())
           .filter(Boolean);
 
-        if (!prompt) {
-          alert('문장을 입력해 주세요.');
-          return;
-        }
+        if (isVocab) {
+          const meaning = $('#card-meaning', root).value.trim();
+          const mnemonic = $('#card-mnemonic', root).value.trim();
+          const example = $('#card-example', root).value.trim();
 
-        if (isEdit) {
-          const target = DATA.cards.find((x) => x.id === c.id);
-          if (!target) return;
-          target.prompt = prompt;
-          target.answer = answer;
-          target.explanation = explanation;
-          target.tags = tags;
-          target.updatedAt = now();
+          if (!meaning) {
+            // 뜻은 사실상 필수(그래도 저장은 가능하도록 완화)
+            // alert('뜻을 입력해 주세요.');
+            // return;
+          }
+
+          if (isEdit) {
+            const target = DATA.cards.find((x) => x.id === c.id);
+            if (!target) return;
+            target.prompt = prompt;
+            target.answer = 'O';            // ✅ vocab deck: fixed
+            target.meaning = meaning;
+            target.mnemonic = mnemonic;
+            target.example = example;
+            target.explanation = meaning;    // ✅ 검색/호환용
+            target.tags = tags;
+            target.updatedAt = now();
+          } else {
+            const id = uuid();
+            DATA.cards.push({
+              id,
+              deckId,
+              prompt,
+              answer: 'O',                  // ✅ fixed
+              meaning,
+              mnemonic,
+              example,
+              explanation: meaning,          // ✅ 검색/호환용
+              tags,
+              createdAt: now(),
+              updatedAt: now(),
+            });
+            DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+          }
         } else {
-          const id = uuid();
-          DATA.cards.push({
-            id,
-            deckId,
-            prompt,
-            answer,
-            explanation,
-            tags,
-            createdAt: now(),
-            updatedAt: now(),
-          });
-          DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+          const answer = normalizeAnswer($('#card-answer', root).value) || 'O';
+          const explanation = $('#card-expl', root).value.trim();
+
+          if (isEdit) {
+            const target = DATA.cards.find((x) => x.id === c.id);
+            if (!target) return;
+            target.prompt = prompt;
+            target.answer = answer;
+            target.explanation = explanation;
+            target.tags = tags;
+            target.updatedAt = now();
+          } else {
+            const id = uuid();
+            DATA.cards.push({
+              id,
+              deckId,
+              prompt,
+              answer,
+              explanation,
+              tags,
+              createdAt: now(),
+              updatedAt: now(),
+            });
+            DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+          }
         }
 
         commit();
@@ -801,25 +980,38 @@ function openCardModal({ deckId, card }) {
         toast('저장됨');
         renderRoute();
       });
+
       setTimeout(() => $('#card-prompt', root).focus(), 0);
     },
   });
 }
 
+
 function openBulkAddModal(deckId) {
+  const deck = getDeck(deckId);
+  if (!deck) {
+    alert('대상 카테고리를 찾을 수 없습니다.');
+    return;
+  }
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+
   openModal({
-    title: '여러 개 붙여넣기',
+    title: isVocab ? '여러 단어 붙여넣기' : '여러 개 붙여넣기',
     bodyHTML: `
       <div class="card" style="margin-bottom: 12px;">
         <div style="font-size: 13px; color: var(--muted); line-height: 1.5;">
-          한 줄에 1문제씩 붙여넣으세요.<br>
-          형식: <span class="kbd">문장</span> <span class="kbd">|</span> <span class="kbd">O/X</span> <span class="kbd">|</span> <span class="kbd">설명(선택)</span><br>
+          한 줄에 1개씩 붙여넣으세요.<br>
+          ${isVocab
+            ? `형식: <span class="kbd">단어</span> <span class="kbd">|</span> <span class="kbd">뜻</span> <span class="kbd">|</span> <span class="kbd">연상(선택)</span> <span class="kbd">|</span> <span class="kbd">예문(선택)</span><br>`
+            : `형식: <span class="kbd">문장</span> <span class="kbd">|</span> <span class="kbd">O/X</span> <span class="kbd">|</span> <span class="kbd">설명(선택)</span><br>`}
           탭(<span class="kbd">\t</span>) 구분도 지원합니다.
         </div>
       </div>
       <div class="field">
         <label>붙여넣기</label>
-        <textarea id="bulk" placeholder="think it better to tell the truth | O | think + it + adj + toV\nthink better to tell the truth | X | 가목적어 it 필요"></textarea>
+        <textarea id="bulk" placeholder="${isVocab
+          ? `avalanche | n. 눈사태; 산사태; 쇄도 | 아~ 발 안 차! 눈사태처럼 몰려온다 | An avalanche of emails arrived.\naccentuate | v. (악센트를) 강조하다 | 악센트 세게! 강조하다 | She accentuated the first syllable.`
+          : `think it better to tell the truth | O | think + it + adj + toV\nthink better to tell the truth | X | 가목적어 it 필요`}"></textarea>
       </div>
       <div class="modal-actions">
         <button class="btn" id="bulk-cancel">취소</button>
@@ -849,25 +1041,43 @@ function openBulkAddModal(deckId) {
             ? line.split('\t').map((x) => x.trim())
             : line.split('|').map((x) => x.trim());
 
-          if (cols.length < 2) {
-            errors.push(`${i + 1}행: 구분자를 확인하세요`);
-            continue;
-          }
+          if (isVocab) {
+            if (cols.length < 1) {
+              errors.push(`${i + 1}행: 구분자를 확인하세요`);
+              continue;
+            }
+            const word = cols[0] || '';
+            const meaning = cols[1] || '';
+            const mnemonic = cols[2] || '';
+            const example = cols[3] || '';
 
-          const prompt = cols[0];
-          const ans = normalizeAnswer(cols[1]);
-          const explanation = cols.slice(2).join(' | ').trim();
+            if (!word) {
+              errors.push(`${i + 1}행: 단어가 비어있음`);
+              continue;
+            }
 
-          if (!prompt) {
-            errors.push(`${i + 1}행: 문장이 비어있음`);
-            continue;
-          }
-          if (!ans) {
-            errors.push(`${i + 1}행: O/X 판별 불가`);
-            continue;
-          }
+            added.push({ prompt: word, meaning, mnemonic, example });
+          } else {
+            if (cols.length < 2) {
+              errors.push(`${i + 1}행: 구분자를 확인하세요`);
+              continue;
+            }
 
-          added.push({ prompt, answer: ans, explanation });
+            const prompt = cols[0];
+            const ans = normalizeAnswer(cols[1]);
+            const explanation = cols.slice(2).join(' | ').trim();
+
+            if (!prompt) {
+              errors.push(`${i + 1}행: 문장이 비어있음`);
+              continue;
+            }
+            if (!ans) {
+              errors.push(`${i + 1}행: O/X 판별 불가`);
+              continue;
+            }
+
+            added.push({ prompt, answer: ans, explanation });
+          }
         }
 
         if (added.length === 0) {
@@ -880,16 +1090,32 @@ function openBulkAddModal(deckId) {
 
         added.forEach((x) => {
           const id = uuid();
-          DATA.cards.push({
-            id,
-            deckId,
-            prompt: x.prompt,
-            answer: x.answer,
-            explanation: x.explanation,
-            tags: [],
-            createdAt: now(),
-            updatedAt: now(),
-          });
+          if (isVocab) {
+            DATA.cards.push({
+              id,
+              deckId,
+              prompt: x.prompt,
+              answer: 'O',
+              meaning: x.meaning || '',
+              mnemonic: x.mnemonic || '',
+              example: x.example || '',
+              explanation: x.meaning || '',
+              tags: [],
+              createdAt: now(),
+              updatedAt: now(),
+            });
+          } else {
+            DATA.cards.push({
+              id,
+              deckId,
+              prompt: x.prompt,
+              answer: x.answer,
+              explanation: x.explanation,
+              tags: [],
+              createdAt: now(),
+              updatedAt: now(),
+            });
+          }
           DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
         });
 
@@ -901,6 +1127,7 @@ function openBulkAddModal(deckId) {
     },
   });
 }
+
 
 // -------------------------
 // Study mode
@@ -962,14 +1189,19 @@ function renderStudy(deckId, opts = {}) {
     return;
   }
 
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+  const labelWrong = isVocab ? '모름' : '틀림';
+  const labelWrongOnly = isVocab ? '모름' : '오답';
+  const labelCorrect = isVocab ? '알았음' : '맞춤';
+
   const cards = getCards(deckId);
   if (cards.length === 0) {
     setSubtitle(deck.name);
     appEl.innerHTML = `
       <div class="card">
-        <div style="font-weight: 750; margin-bottom: 6px;">문제가 없습니다</div>
-        <div style="color: var(--muted); margin-bottom: 12px;">먼저 문제를 추가해 주세요.</div>
-        <button class="btn primary" id="go-add">+ 문제 추가</button>
+        <div style="font-weight: 750; margin-bottom: 6px;">카드가 없습니다</div>
+        <div style="color: var(--muted); margin-bottom: 12px;">먼저 카드를 추가해 주세요.</div>
+        <button class="btn primary" id="go-add">+ ${isVocab ? '단어' : '문제'} 추가</button>
       </div>
     `;
     $('#go-add').addEventListener('click', () => {
@@ -978,7 +1210,7 @@ function renderStudy(deckId, opts = {}) {
     return;
   }
 
-  // Determine mode (all / bookmarks)
+  // Determine mode (all / bookmarks / wrongs)
   const hasMode = Object.prototype.hasOwnProperty.call(opts || {}, 'mode');
   const requestedMode = hasMode ? normalizeStudyMode(opts.mode) : null;
   const desiredMode = requestedMode || (STUDY && STUDY.deckId === deckId ? STUDY.mode : 'all');
@@ -990,14 +1222,14 @@ function renderStudy(deckId, opts = {}) {
     setSubtitle(`${deck.name} · 북마크 학습`);
     appEl.innerHTML = `
       <div class="card">
-        <div style="font-weight: 850; font-size: 16px; margin-bottom: 8px;">북마크된 문제가 없습니다</div>
+        <div style="font-weight: 850; font-size: 16px; margin-bottom: 8px;">북마크된 카드가 없습니다</div>
         <div style="color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
-          학습 화면(★ 버튼)이나 문제 목록에서 북마크를 찍어두면,<br>
+          학습 화면(★ 버튼)이나 카드 목록에서 북마크를 찍어두면,<br>
           여기서 북마크만 모아서 회독할 수 있어요.
         </div>
         <div class="row" style="gap: 10px; flex-wrap: wrap;">
           <button class="btn primary" id="go-all">전체 학습하기</button>
-          <button class="btn" id="go-manage">문제 관리</button>
+          <button class="btn" id="go-manage">카드 관리</button>
         </div>
       </div>
     `;
@@ -1006,19 +1238,19 @@ function renderStudy(deckId, opts = {}) {
     return;
   }
 
-  // 오답 모드인데(틀린 기록) 오답이 없으면 안내
+  // 오답/모름 모드인데 대상이 없으면 안내
   if (desiredMode === 'wrongs' && desiredIds.length === 0) {
-    setSubtitle(`${deck.name} · 오답 학습`);
+    setSubtitle(`${deck.name} · ${labelWrongOnly} 학습`);
     appEl.innerHTML = `
       <div class="card">
-        <div style="font-weight: 850; font-size: 16px; margin-bottom: 8px;">틀린 문제가 없습니다</div>
+        <div style="font-weight: 850; font-size: 16px; margin-bottom: 8px;">${isVocab ? '모르는 카드가 없습니다' : '틀린 문제가 없습니다'}</div>
         <div style="color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
-          먼저 <b>전체 학습</b>을 하면서 틀린 문제가 쌓이면,<br>
-          여기서 <b>오답만</b> 모아서 회독할 수 있어요.
+          먼저 <b>전체 학습</b>을 하면서 ${isVocab ? '모르는 카드' : '오답'}이 쌓이면,<br>
+          여기서 <b>${labelWrongOnly}만</b> 모아서 회독할 수 있어요.
         </div>
         <div class="row" style="gap: 10px; flex-wrap: wrap;">
           <button class="btn primary" id="go-all">전체 학습하기</button>
-          <button class="btn" id="go-manage">문제 관리</button>
+          <button class="btn" id="go-manage">카드 관리</button>
         </div>
       </div>
     `;
@@ -1032,7 +1264,7 @@ function renderStudy(deckId, opts = {}) {
     newStudySession(deckId, desiredMode, desiredIds);
   }
 
-  const modeTitle = STUDY.mode === 'bookmarks' ? '북마크 학습' : (STUDY.mode === 'wrongs' ? '오답 학습' : '학습');
+  const modeTitle = STUDY.mode === 'bookmarks' ? '북마크 학습' : (STUDY.mode === 'wrongs' ? `${labelWrongOnly} 학습` : '학습');
   setSubtitle(`${deck.name} · ${modeTitle}`);
 
   // Summary
@@ -1044,14 +1276,14 @@ function renderStudy(deckId, opts = {}) {
       <div class="card">
         <div style="font-weight: 850; font-size: 18px;">학습 완료</div>
         <div style="margin-top: 10px; color: var(--muted); line-height: 1.6;">
-          모드: <b>${STUDY.mode === 'bookmarks' ? '북마크' : (STUDY.mode === 'wrongs' ? '오답' : '전체')}</b><br>
-          총 ${total}개 중 <b>맞춤 ${STUDY.correctCount}</b>, <b>틀림 ${STUDY.wrongCount}</b> · 정답률 <b>${acc}%</b>
+          모드: <b>${STUDY.mode === 'bookmarks' ? '북마크' : (STUDY.mode === 'wrongs' ? labelWrongOnly : '전체')}</b><br>
+          총 ${total}개 중 <b>${labelCorrect} ${STUDY.correctCount}</b>, <b>${labelWrong} ${STUDY.wrongCount}</b> · ${isVocab ? '알았음률' : '정답률'} <b>${acc}%</b>
         </div>
         <div class="hr"></div>
         <div class="row" style="gap: 10px; flex-wrap: wrap;">
-          <button class="btn primary" id="btn-review-wrong" ${STUDY.wrongIds.length ? '' : 'disabled'}>틀린 것만 다시</button>
+          <button class="btn primary" id="btn-review-wrong" ${STUDY.wrongIds.length ? '' : 'disabled'}>${isVocab ? '모르는 것만 다시' : '틀린 것만 다시'}</button>
           <button class="btn" id="btn-restart">처음부터 다시</button>
-          <button class="btn" id="btn-manage">문제 관리</button>
+          <button class="btn" id="btn-manage">카드 관리</button>
         </div>
       </div>
     `;
@@ -1101,9 +1333,19 @@ function renderStudy(deckId, opts = {}) {
   const pos = STUDY.index + 1;
   const total = STUDY.queue.length;
 
-  const expl = card.explanation?.trim() ? card.explanation.trim() : '(설명 없음)';
   const answered = !!STUDY.answered;
   const bookmarked = isBookmarked(card.id);
+
+  // vocab fields
+  const meaning = String(card.meaning || card.explanation || '').trim();
+  const mnemonic = String(card.mnemonic || '').trim();
+  const example = String(card.example || '').trim();
+
+  const expl = card.explanation?.trim() ? card.explanation.trim() : '(설명 없음)';
+
+  const showMeaning = meaning ? escapeText(meaning) : '(뜻 없음)';
+  const showMnemonic = mnemonic ? escapeText(mnemonic) : null;
+  const showExample = example ? escapeText(example) : null;
 
   appEl.innerHTML = `
     <div class="study-card">
@@ -1111,7 +1353,7 @@ function renderStudy(deckId, opts = {}) {
         <span class="pill">${pos} / ${total}</span>
         <div style="display:flex; gap: 8px; align-items:center;">
           <button class="btn small" id="btn-bookmark">${bookmarked ? '★ 북마크' : '☆ 북마크'}</button>
-          <span class="pill">틀림 ${STUDY.wrongCount}</span>
+          <span class="pill">${labelWrong} ${STUDY.wrongCount}</span>
         </div>
       </div>
 
@@ -1120,19 +1362,33 @@ function renderStudy(deckId, opts = {}) {
       ${answered ? `
         <div class="card" style="margin: 10px 0 12px; background: var(--card);">
           <div style="font-weight: 900; margin-bottom: 8px;">
-            ${STUDY.lastIsCorrect ? '✅ 정답' : '❌ 오답'}
+            ${STUDY.lastIsCorrect ? (isVocab ? '✅ 알았음' : '✅ 정답') : (isVocab ? '❌ 모름' : '❌ 오답')}
           </div>
-          <div class="study-answer" style="margin-bottom: 8px;">
-            <div class="answer-badge">${escapeText(card.answer)}</div>
-            <div>내 선택: <b>${escapeText(STUDY.choice)}</b> · 정답: <b>${escapeText(card.answer)}</b></div>
-          </div>
-          <div class="study-expl">${escapeText(expl)}</div>
+
+          ${isVocab ? `
+            <div class="study-answer" style="margin-bottom: 10px;">
+              <div class="answer-badge">${escapeText(STUDY.choice)}</div>
+              <div>내 선택: <b>${escapeText(STUDY.choice)}</b> (${STUDY.choice === 'O' ? '앎' : '모름'})</div>
+            </div>
+
+            <div class="study-expl" style="line-height: 1.6;">
+              <div><b>뜻</b>: ${showMeaning}</div>
+              ${showMnemonic ? `<div style="margin-top: 6px;"><b>연상</b>: ${showMnemonic}</div>` : ''}
+              ${showExample ? `<div style="margin-top: 6px;"><b>예문</b>: ${showExample}</div>` : ''}
+            </div>
+          ` : `
+            <div class="study-answer" style="margin-bottom: 8px;">
+              <div class="answer-badge">${escapeText(card.answer)}</div>
+              <div>내 선택: <b>${escapeText(STUDY.choice)}</b> · 정답: <b>${escapeText(card.answer)}</b></div>
+            </div>
+            <div class="study-expl">${escapeText(expl)}</div>
+          `}
         </div>
 
         <button class="btn primary block" id="btn-next">다음</button>
 
         <div style="margin-top: 10px; display:flex; gap: 8px; justify-content: space-between; flex-wrap: wrap;">
-          <button class="btn small" id="btn-edit">이 문제 수정</button>
+          <button class="btn small" id="btn-edit">이 카드 수정</button>
           <button class="btn small" id="btn-skip">건너뛰기</button>
         </div>
       ` : `
@@ -1142,12 +1398,12 @@ function renderStudy(deckId, opts = {}) {
         </div>
 
         <div style="margin-top: 10px; display:flex; gap: 8px; justify-content: space-between; flex-wrap: wrap;">
-          <button class="btn small" id="btn-edit">이 문제 수정</button>
+          <button class="btn small" id="btn-edit">이 카드 수정</button>
           <button class="btn small" id="btn-skip">건너뛰기</button>
         </div>
 
         <div style="margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.4;">
-          O/X를 선택하면 정답과 해설이 표시됩니다.
+          ${isVocab ? 'O(앎) / X(모름)을 선택하면 뜻/연상/예문이 표시됩니다.' : 'O/X를 선택하면 정답과 해설이 표시됩니다.'}
         </div>
       `}
     </div>
@@ -1162,7 +1418,7 @@ function renderStudy(deckId, opts = {}) {
     STUDY.choice = normalized; // 'O' | 'X'
     STUDY.answered = true;
 
-    const isCorrect = normalized === card.answer;
+    const isCorrect = isVocab ? (normalized === 'O') : (normalized === card.answer);
     STUDY.lastIsCorrect = isCorrect;
 
     const st = DATA.stats[card.id] || (DATA.stats[card.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false });
@@ -1199,7 +1455,6 @@ function renderStudy(deckId, opts = {}) {
     bmBtn.addEventListener('click', () => {
       const next = toggleBookmark(card.id);
       toast(next ? '북마크됨' : '북마크 해제');
-      // 북마크 모드에서 북마크가 0이 되면 안내 화면으로 전환될 수 있음
       renderStudy(deckId);
     });
   }
@@ -1236,6 +1491,7 @@ function renderStudy(deckId, opts = {}) {
   const nextBtn = $('#btn-next');
   if (nextBtn) nextBtn.addEventListener('click', goNext);
 }
+
 
 
 // -------------------------
@@ -1283,6 +1539,14 @@ function renderImportExport() {
       <div style="color: var(--muted); font-size: 13px; line-height: 1.5; margin-bottom: 12px;">
         JSON 파일(전체 백업) 또는 카드 배열(JSON)을 가져올 수 있어요.
       </div>
+
+      <div class="row" style="gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color: var(--muted);">
+          <input type="checkbox" id="opt-vocab-dedupe" checked />
+          <span>단어장: 같은 단어(prompt)는 <b>중복 추가하지 않고 덮어쓰기</b> (자동 중복 제거)</span>
+        </label>
+      </div>
+
       <div class="field">
         <label>JSON 파일 선택 (전체 백업 권장)</label>
         <input type="file" id="file" accept="application/json" />
@@ -1299,7 +1563,7 @@ function renderImportExport() {
 
       <div class="field">
         <label>붙여넣기 (ChatGPT가 준 JSON)</label>
-        <textarea id="paste" placeholder='예) [{"prompt":"...","answer":"O","explanation":"..."}, ...]'></textarea>
+        <textarea id="paste" placeholder='예) 문법: [{"prompt":"...","answer":"O","explanation":"..."}, ...] / 단어: [{"prompt":"avalanche","meaning":"n. ...","mnemonic":"...","example":"..."}, ...]'></textarea>
       </div>
       <div class="row" style="gap: 10px; flex-wrap: wrap;">
         <select id="paste-target" style="flex: 1; min-width: 180px;">
@@ -1307,13 +1571,47 @@ function renderImportExport() {
         </select>
         <button class="btn primary" id="btn-import-paste">붙여넣기 가져오기</button>
       </div>
+
+      <div class="hr"></div>
+
+      <div class="field">
+        <label>스프레드시트 표 붙여넣기 (TSV/CSV)</label>
+        <textarea id="table" placeholder="예) (단어장) 키워드\t뜻\n키워드2\t뜻2\n\n또는 (문법) 문장\tO/X\t해설"></textarea>
+        <div class="small" style="margin-top:8px; line-height:1.5;">
+          • Google Sheets에서 2열(키워드/뜻)을 복사하면 보통 <b>탭(\t)</b>으로 붙습니다.<br>
+          • 첫 줄이 <b>헤더</b>(키워드/뜻/해설 등)면 자동으로 인식합니다.<br>
+          • 문법 OX: <span class="kbd">문장\tO/X\t해설</span> / 단어장: <span class="kbd">키워드\t뜻\t연상\t예문</span>
+        </div>
+      </div>
+      <div class="row" style="gap: 10px; flex-wrap: wrap;">
+        <select id="table-target" style="flex: 1; min-width: 180px;">
+          ${deckOptions}
+        </select>
+        <button class="btn primary" id="btn-import-table">표 가져오기</button>
+      </div>
+
+      <div style="height:10px"></div>
+
+      <div class="field">
+        <label>CSV 파일 선택 (선택)</label>
+        <input type="file" id="csv" accept="text/csv,.csv,text/tab-separated-values,.tsv" />
+      </div>
+      <div class="row" style="gap: 10px; flex-wrap: wrap;">
+        <select id="csv-target" style="flex: 1; min-width: 180px;">
+          ${deckOptions}
+        </select>
+        <button class="btn" id="btn-import-csv">CSV 가져오기</button>
+        <button class="btn" id="btn-clear-csv">선택 해제</button>
+      </div>
     </div>
 
     <div class="card">
       <div style="font-weight: 800; margin-bottom: 8px;">데이터 형식</div>
       <div style="font-size: 13px; color: var(--muted); line-height: 1.6;">
         1) <b>전체 백업</b>: <span class="kbd">{ decks: [...], cards: [...], stats: {...} }</span><br>
-        2) <b>카드 배열</b>: <span class="kbd">[{ prompt, answer, explanation?, tags? }, ...]</span> (선택한 카테고리에 추가)
+        2) <b>카드 배열</b>: <span class="kbd">[{ prompt, ... }, ...]</span> (선택한 카테고리에 추가)<br>
+        · 문법 OX: <span class="kbd">{ prompt, answer, explanation?, tags? }</span><br>
+        · 단어장: <span class="kbd">{ prompt, meaning, mnemonic?, example?, tags? }</span>
       </div>
     </div>
   `;
@@ -1355,7 +1653,8 @@ function renderImportExport() {
     try {
       const obj = JSON.parse(text);
       const targetDeckId = $('#file-target')?.value;
-      importObject(obj, { targetDeckId });
+      const vocabDedupe = $('#opt-vocab-dedupe')?.checked ?? true;
+      importObject(obj, { targetDeckId, vocabDedupe });
     } catch (e) {
       alert('JSON 파싱에 실패했습니다.');
     }
@@ -1370,15 +1669,183 @@ function renderImportExport() {
     const targetDeckId = $('#paste-target').value;
     try {
       const obj = JSON.parse(text);
-      importObject(obj, { targetDeckId });
+      const vocabDedupe = $('#opt-vocab-dedupe')?.checked ?? true;
+      importObject(obj, { targetDeckId, vocabDedupe });
     } catch (e) {
       alert('JSON 파싱에 실패했습니다.');
     }
   });
+
+  $('#btn-import-table').addEventListener('click', () => {
+    const text = $('#table').value.trim();
+    if (!text) {
+      alert('붙여넣기(표) 내용이 없습니다.');
+      return;
+    }
+    const targetDeckId = $('#table-target').value;
+    try {
+      const arr = parseSpreadsheetTable(text, targetDeckId);
+      const vocabDedupe = $('#opt-vocab-dedupe')?.checked ?? true;
+      importObject(arr, { targetDeckId, vocabDedupe });
+    } catch (e) {
+      alert(e?.message || '표 파싱에 실패했습니다.');
+    }
+  });
+
+  $('#btn-clear-csv').addEventListener('click', () => {
+    $('#csv').value = '';
+    toast('선택 해제');
+  });
+
+  $('#btn-import-csv').addEventListener('click', async () => {
+    const file = $('#csv').files?.[0];
+    if (!file) {
+      alert('CSV/TSV 파일을 선택해 주세요.');
+      return;
+    }
+    const text = await file.text();
+    const targetDeckId = $('#csv-target').value;
+    try {
+      const arr = parseSpreadsheetTable(text, targetDeckId);
+      const vocabDedupe = $('#opt-vocab-dedupe')?.checked ?? true;
+      importObject(arr, { targetDeckId, vocabDedupe });
+    } catch (e) {
+      alert(e?.message || 'CSV 파싱에 실패했습니다.');
+    }
+  });
+}
+
+function parseSpreadsheetTable(text, targetDeckId) {
+  // Returns array of card-like objects (for importObject Case B)
+  const deck = getDeck(targetDeckId);
+  if (!deck) throw new Error('대상 카테고리를 찾을 수 없습니다.');
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+
+  const rows = parseDelimited(text);
+  if (!rows.length) throw new Error('표에 행이 없습니다.');
+
+  // Header detection
+  const header = rows[0].map((x) => String(x || '').trim());
+  const hasHeader = header.some((h) => /키워드|용어|term|word|뜻|의미|meaning|해설|설명|explanation|answer|정답/i.test(h));
+
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+
+  const colIndex = (patterns, fallback) => {
+    if (!hasHeader) return fallback;
+    const idx = header.findIndex((h) => patterns.some((p) => p.test(h)));
+    return idx >= 0 ? idx : fallback;
+  };
+
+  if (isVocab) {
+    const idxPrompt = colIndex([/키워드/i, /용어/i, /^term$/i, /^word$/i], 0);
+    const idxMeaning = colIndex([/뜻/i, /의미/i, /^meaning$/i, /정의/i, /설명/i], 1);
+    const idxMnemonic = colIndex([/연상/i, /암기/i, /^mnemonic$/i, /assoc/i], 2);
+    const idxExample = colIndex([/예문/i, /^example$/i, /sentence/i], 3);
+    const idxTags = colIndex([/^tags?$/i, /태그/i], 4);
+
+    const out = [];
+    for (const r of dataRows) {
+      const prompt = String(r[idxPrompt] ?? '').trim();
+      const meaning = String(r[idxMeaning] ?? '').trim();
+      if (!prompt) continue;
+      const mnemonic = String(r[idxMnemonic] ?? '').trim();
+      const example = String(r[idxExample] ?? '').trim();
+      const tagsCell = String(r[idxTags] ?? '').trim();
+      const tags = tagsCell
+        ? tagsCell
+            .split(/[,，;；\n]+/)
+            .map((t) => t.trim())
+            .filter(Boolean)
+        : [];
+
+      out.push({ prompt, meaning, mnemonic, example, tags });
+    }
+    if (!out.length) throw new Error('추출된 키워드가 없습니다. (키워드/뜻 2열인지 확인)');
+    return out;
+  }
+
+  // Grammar OX
+  const idxPrompt = colIndex([/문장/i, /문제/i, /^prompt$/i, /^q$/i], 0);
+  const idxAnswer = colIndex([/^answer$/i, /정답/i, /^ox$/i], 1);
+  const idxExp = colIndex([/해설/i, /설명/i, /^explanation$/i], 2);
+  const idxTags = colIndex([/^tags?$/i, /태그/i], 3);
+
+  const out = [];
+  for (const r of dataRows) {
+    const prompt = String(r[idxPrompt] ?? '').trim();
+    const answer = String(r[idxAnswer] ?? '').trim();
+    if (!prompt || !answer) continue;
+    const explanation = String(r[idxExp] ?? '').trim();
+    const tagsCell = String(r[idxTags] ?? '').trim();
+    const tags = tagsCell
+      ? tagsCell
+          .split(/[,，;；\n]+/)
+          .map((t) => t.trim())
+          .filter(Boolean)
+      : [];
+    out.push({ prompt, answer, explanation, tags });
+  }
+  if (!out.length) throw new Error('추출된 문법 문제가 없습니다. (문장/OX/해설 열인지 확인)');
+  return out;
+}
+
+function parseDelimited(text) {
+  const raw = String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
+  if (!raw) return [];
+
+  // If there are tabs, treat as TSV. Otherwise try CSV, else fallback to " - "
+  const hasTab = raw.includes('\t');
+  const lines = raw.split('\n').filter((l) => l.trim().length);
+  if (!lines.length) return [];
+
+  if (hasTab) {
+    return lines.map((l) => l.split('\t'));
+  }
+
+  // Simple CSV parser with quotes
+  const hasComma = lines.some((l) => l.includes(','));
+  if (hasComma) {
+    return lines.map(parseCsvLine);
+  }
+
+  // Fallback: "term - meaning" one per line
+  return lines.map((l) => {
+    const m = l.split(/\s+-\s+|\s+—\s+|\s+–\s+/);
+    return m.length >= 2 ? [m[0], m.slice(1).join(' - ')] : [l];
+  });
+}
+
+function parseCsvLine(line) {
+  const out = [];
+  let cur = '';
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQ = !inQ;
+      }
+      continue;
+    }
+    if (ch === ',' && !inQ) {
+      out.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
 }
 
 function importObject(obj, opts = {}) {
-  const { targetDeckId } = opts;
+  const { targetDeckId, vocabDedupe = true } = opts;
 
   // Case A: full backup object
   if (obj && typeof obj === 'object' && !Array.isArray(obj) && Array.isArray(obj.decks) && Array.isArray(obj.cards)) {
@@ -1404,6 +1871,8 @@ function importObject(obj, opts = {}) {
       return;
     }
 
+    const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+
     const parsed = [];
     const errors = [];
 
@@ -1413,21 +1882,32 @@ function importObject(obj, opts = {}) {
         errors.push(`${i + 1}번째: 객체가 아님`);
         continue;
       }
-      const prompt = String(row.prompt ?? '').trim();
-      const ans = normalizeAnswer(row.answer);
-      const explanation = String(row.explanation ?? '').trim();
-      const tags = Array.isArray(row.tags) ? row.tags.map((t) => String(t).trim()).filter(Boolean) : [];
 
+      const prompt = String(row.prompt ?? row.word ?? '').trim();
       if (!prompt) {
-        errors.push(`${i + 1}번째: prompt 비어있음`);
-        continue;
-      }
-      if (!ans) {
-        errors.push(`${i + 1}번째: answer O/X 판별 불가`);
+        errors.push(`${i + 1}번째: prompt(word) 비어있음`);
         continue;
       }
 
-      parsed.push({ prompt, answer: ans, explanation, tags });
+      if (isVocab) {
+        const meaning = String(row.meaning ?? row.explanation ?? '').trim();
+        const mnemonic = String(row.mnemonic ?? row.assoc ?? row.association ?? '').trim();
+        const example = String(row.example ?? row.sentence ?? '').trim();
+        const tags = Array.isArray(row.tags) ? row.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+
+        parsed.push({ prompt, answer: 'O', meaning, mnemonic, example, explanation: meaning, tags });
+      } else {
+        const ans = normalizeAnswer(row.answer);
+        const explanation = String(row.explanation ?? '').trim();
+        const tags = Array.isArray(row.tags) ? row.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+
+        if (!ans) {
+          errors.push(`${i + 1}번째: answer O/X 판별 불가`);
+          continue;
+        }
+
+        parsed.push({ prompt, answer: ans, explanation, tags });
+      }
     }
 
     if (parsed.length === 0) {
@@ -1435,7 +1915,126 @@ function importObject(obj, opts = {}) {
       return;
     }
 
-    const ok = confirm(`카드 ${parsed.length}개를 '${deck.name}'에 추가할까요?` + (errors.length ? `\n(오류 ${errors.length}개는 건너뜀)` : ''));
+    // --------
+    // NEW: vocab import de-dup / overwrite by prompt (단어장 중복 제거)
+    // --------
+    if (isVocab && vocabDedupe) {
+      // 1) Merge existing duplicates inside the deck (by normalized prompt)
+      const { index: existingIndex, mergedExisting } = mergeVocabDuplicatesInDeck(targetDeckId);
+
+      // 2) De-dup duplicates inside input JSON (last one wins)
+      const inputMap = new Map();
+      let inputDup = 0;
+      parsed.forEach((it) => {
+        const k = normalizePromptKey(it.prompt);
+        if (!k) return;
+        if (inputMap.has(k)) inputDup++;
+        inputMap.set(k, it);
+      });
+      const uniqueParsed = Array.from(inputMap.values());
+
+      // 3) Preview counts
+      let willAdd = 0;
+      let willOverwrite = 0;
+      uniqueParsed.forEach((it) => {
+        const k = normalizePromptKey(it.prompt);
+        if (!k) return;
+        if (existingIndex.has(k)) willOverwrite++;
+        else willAdd++;
+      });
+
+      const ok = confirm(
+        `단어 ${uniqueParsed.length}개를 '${deck.name}'에 반영할까요?\n` +
+          `- 새로 추가: ${willAdd}개\n` +
+          `- 덮어쓰기(중복 제거): ${willOverwrite}개` +
+          (inputDup ? `\n- 입력 중복 제거: ${inputDup}개` : '') +
+          (mergedExisting ? `\n- 기존 중복 정리: ${mergedExisting}개` : '') +
+          (errors.length ? `\n(오류 ${errors.length}개는 건너뜀)` : '')
+      );
+      if (!ok) return;
+
+      let added = 0;
+      let overwritten = 0;
+
+      uniqueParsed.forEach((it) => {
+        const k = normalizePromptKey(it.prompt);
+        if (!k) return;
+
+        const existingId = existingIndex.get(k);
+        const meaning = String(it.meaning ?? it.explanation ?? '').trim();
+        const mnemonic = String(it.mnemonic ?? '').trim();
+        const example = String(it.example ?? '').trim();
+        const tags = Array.isArray(it.tags) ? it.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+
+        if (existingId) {
+          const card = DATA.cards.find((c) => c.id === existingId);
+          if (card) {
+            // Update (빈 값은 기존 값 유지)
+            card.prompt = it.prompt;
+            card.answer = 'O';
+
+            if (meaning) {
+              card.meaning = meaning;
+              card.explanation = meaning;
+            } else {
+              if (!card.meaning && card.explanation) card.meaning = String(card.explanation || '').trim();
+              if (card.meaning && !card.explanation) card.explanation = String(card.meaning || '').trim();
+            }
+
+            if (mnemonic) card.mnemonic = mnemonic;
+            if (example) card.example = example;
+
+            // Tags: merge (keep existing tags)
+            if (tags.length) {
+              card.tags = Array.from(new Set([...(card.tags || []), ...tags].map((t) => String(t).trim()).filter(Boolean)));
+            }
+
+            card.updatedAt = now();
+
+            if (!DATA.stats[existingId]) DATA.stats[existingId] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+            card.bookmarked = !!DATA.stats[existingId].bookmark;
+
+            overwritten++;
+            return;
+          }
+        }
+
+        // Create new
+        const id = uuid();
+        DATA.cards.push({
+          id,
+          deckId: targetDeckId,
+          prompt: it.prompt,
+          answer: 'O',
+          explanation: meaning || '',
+          tags: tags || [],
+          meaning: meaning || '',
+          mnemonic: mnemonic || '',
+          example: example || '',
+          createdAt: now(),
+          updatedAt: now(),
+          bookmarked: false,
+        });
+        DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+        existingIndex.set(k, id);
+        added++;
+      });
+
+      commit();
+      toast(
+        `완료: 추가 ${added}개 / 덮어쓰기 ${overwritten}개` +
+          (inputDup ? ` / 입력중복 ${inputDup}개` : '') +
+          (mergedExisting ? ` / 기존중복정리 ${mergedExisting}개` : '')
+      );
+      location.hash = `#/deck/${targetDeckId}`;
+      renderRoute();
+      return;
+    }
+
+    // Default behavior (문법/또는 덮어쓰기 OFF): 그냥 추가
+    const ok = confirm(
+      `카드 ${parsed.length}개를 '${deck.name}'에 추가할까요?` + (errors.length ? `\n(오류 ${errors.length}개는 건너뜀)` : '')
+    );
     if (!ok) return;
 
     parsed.forEach((x) => {
@@ -1446,9 +2045,13 @@ function importObject(obj, opts = {}) {
         prompt: x.prompt,
         answer: x.answer,
         explanation: x.explanation,
-        tags: x.tags,
+        tags: x.tags || [],
+        meaning: x.meaning || '',
+        mnemonic: x.mnemonic || '',
+        example: x.example || '',
         createdAt: now(),
         updatedAt: now(),
+        bookmarked: false,
       });
       DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
     });
@@ -1462,6 +2065,106 @@ function importObject(obj, opts = {}) {
 
   alert('지원하지 않는 JSON 형식입니다.\n전체 백업 또는 카드 배열(JSON)을 넣어주세요.');
 }
+
+function mergeVocabDuplicatesInDeck(deckId) {
+  // Merge duplicates inside a vocab deck by normalized prompt.
+  // - Keep the most recently updated card
+  // - Combine stats (correct/wrong), keep bookmark if any
+  // - Fill empty fields (meaning/mnemonic/example) from duplicates
+  const cards = DATA.cards.filter((c) => c.deckId === deckId);
+  const byKey = new Map(); // key -> keepId
+  const removeIds = new Set();
+  let mergedExisting = 0;
+
+  const ensureStat = (id) => {
+    if (!DATA.stats[id]) DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+    return DATA.stats[id];
+  };
+
+  const mergeInto = (keep, drop) => {
+    if (!keep || !drop) return;
+
+    // Prefer keep's prompt casing, but ensure not empty
+    if (!keep.prompt) keep.prompt = drop.prompt;
+
+    // Fill fields if missing
+    keep.meaning = String(keep.meaning || '').trim();
+    drop.meaning = String(drop.meaning || '').trim();
+    keep.mnemonic = String(keep.mnemonic || '').trim();
+    drop.mnemonic = String(drop.mnemonic || '').trim();
+    keep.example = String(keep.example || '').trim();
+    drop.example = String(drop.example || '').trim();
+
+    if (!keep.meaning && drop.meaning) keep.meaning = drop.meaning;
+    if (!keep.mnemonic && drop.mnemonic) keep.mnemonic = drop.mnemonic;
+    if (!keep.example && drop.example) keep.example = drop.example;
+
+    // Keep explanation in sync with meaning for vocab deck
+    if (!keep.explanation && keep.meaning) keep.explanation = keep.meaning;
+    if (keep.meaning && !keep.explanation) keep.explanation = keep.meaning;
+
+    // Merge tags (set)
+    keep.tags = Array.from(
+      new Set([...(keep.tags || []), ...(drop.tags || [])].map((t) => String(t).trim()).filter(Boolean))
+    );
+
+    // Merge stats
+    const ks = ensureStat(keep.id);
+    const ds = ensureStat(drop.id);
+    ks.correct = (ks.correct || 0) + (ds.correct || 0);
+    ks.wrong = (ks.wrong || 0) + (ds.wrong || 0);
+
+    const last = Math.max(ks.lastReviewed || 0, ds.lastReviewed || 0);
+    ks.lastReviewed = last ? last : ks.lastReviewed || ds.lastReviewed || null;
+
+    ks.bookmark = !!(ks.bookmark || ds.bookmark || keep.bookmarked || drop.bookmarked);
+    keep.bookmarked = ks.bookmark;
+
+    // update timestamp
+    keep.updatedAt = Math.max(keep.updatedAt || 0, drop.updatedAt || 0, now());
+
+    // Mark drop for removal
+    removeIds.add(drop.id);
+    delete DATA.stats[drop.id];
+  };
+
+  for (const c of cards) {
+    if (!c || !c.prompt) continue;
+    const key = normalizePromptKey(c.prompt);
+    if (!key) continue;
+
+    const keepId = byKey.get(key);
+    if (!keepId) {
+      byKey.set(key, c.id);
+      continue;
+    }
+
+    const keep = DATA.cards.find((x) => x.id === keepId);
+    if (!keep) {
+      byKey.set(key, c.id);
+      continue;
+    }
+
+    // Choose keep = most recently updated
+    const keepIsNewer = (keep.updatedAt || 0) >= (c.updatedAt || 0);
+    if (keepIsNewer) {
+      mergeInto(keep, c);
+    } else {
+      // swap keep
+      byKey.set(key, c.id);
+      mergeInto(c, keep);
+    }
+    mergedExisting++;
+  }
+
+  if (removeIds.size) {
+    DATA.cards = DATA.cards.filter((c) => !removeIds.has(c.id));
+  }
+
+  return { index: byKey, mergedExisting };
+}
+
+
 
 // -------------------------
 // About
