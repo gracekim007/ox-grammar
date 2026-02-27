@@ -212,6 +212,42 @@ textarea {
   color: var(--muted);
 }
 
+/* Tag chips (for tag-based study) */
+.tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tag-chip.selected {
+  background: #111;
+  color: #fff;
+  border-color: #111;
+}
+
+.tag-chip:active {
+  transform: scale(0.98);
+}
+
+.small {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .study-card {
   border: 1px solid var(--border);
   background: #fff;

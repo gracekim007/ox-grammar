@@ -484,6 +484,226 @@ function deckWrongCount(deckId) {
   return getCards(deckId).filter((c) => isWrongCard(c.id)).length;
 }
 
+// -------------------------
+// Tags: collect / filter / tag-based study
+// -------------------------
+
+function normalizeTag(t) {
+  const s = String(t ?? '').trim();
+  return s;
+}
+
+function parseTagsParam(tagsStr) {
+  if (!tagsStr) return [];
+  return String(tagsStr)
+    .split(',')
+    .map((t) => normalizeTag(t))
+    .filter(Boolean);
+}
+
+function uniqueSorted(arr) {
+  const set = new Set((arr || []).map((x) => String(x).trim()).filter(Boolean));
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'ko'));
+}
+
+function getDeckTags(deckId, baseMode = 'all') {
+  // baseMode: all/bookmarks/wrongs
+  const ids = getCardIdsForMode(deckId, baseMode);
+  const tags = [];
+  ids.forEach((cid) => {
+    const c = DATA.cards.find((x) => x.id === cid);
+    if (!c) return;
+    (c.tags || []).forEach((t) => tags.push(normalizeTag(t)));
+  });
+  return uniqueSorted(tags);
+}
+
+function cardHasTags(card, selectedTags, match = 'any') {
+  const tags = Array.isArray(card?.tags) ? card.tags.map(normalizeTag).filter(Boolean) : [];
+  if (!selectedTags || selectedTags.length === 0) return true;
+  const set = new Set(tags);
+  if (match === 'all') {
+    return selectedTags.every((t) => set.has(t));
+  }
+  // any
+  return selectedTags.some((t) => set.has(t));
+}
+
+function filterCardIdsByTags(cardIds, selectedTags, match = 'any') {
+  if (!selectedTags || selectedTags.length === 0) return cardIds;
+  return (cardIds || []).filter((cid) => {
+    const c = DATA.cards.find((x) => x.id === cid);
+    if (!c) return false;
+    return cardHasTags(c, selectedTags, match);
+  });
+}
+
+function buildStudyHash(deckId, mode, selectedTags = [], tagMatch = 'any') {
+  const m = normalizeStudyMode(mode);
+  const params = new URLSearchParams();
+  if (m && m !== 'all') params.set('mode', m);
+  if (selectedTags && selectedTags.length) {
+    params.set('tags', selectedTags.join(','));
+    params.set('tagMatch', tagMatch === 'all' ? 'all' : 'any');
+  }
+  const qs = params.toString();
+  return `#/study/${deckId}${qs ? `?${qs}` : ''}`;
+}
+
+function openTagStudyModal(deckId, opts = {}) {
+  const deck = getDeck(deckId);
+  if (!deck) return;
+
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+  const labelWrongOnly = isVocab ? '모름' : '오답';
+
+  const initialMode = normalizeStudyMode(opts.mode || 'all');
+  const initialMatch = String(opts.tagMatch || 'any').toLowerCase() === 'all' ? 'all' : 'any';
+  const initialTags = uniqueSorted(Array.isArray(opts.tags) ? opts.tags : parseTagsParam(opts.tags));
+
+  openModal({
+    title: '태그로 골라서 학습',
+    bodyHTML: `
+      <div class="card" style="margin-bottom: 12px;">
+        <div style="font-size: 13px; color: var(--muted); line-height: 1.55;">
+          태그를 선택하면 <b>해당 태그 카드만</b> 모아서 학습합니다.<br>
+          (예: <span class="kbd">가정법</span>, <span class="kbd">who/whom</span>, <span class="kbd">기출</span> 등)
+        </div>
+      </div>
+
+      <div class="field">
+        <label>기준</label>
+        <select id="tag-base">
+          <option value="all">전체</option>
+          <option value="bookmarks">북마크</option>
+          <option value="wrongs">${escapeText(labelWrongOnly)}(만)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>매칭 방식</label>
+        <div class="row" style="gap:8px; flex-wrap:wrap;">
+          <button class="btn small" id="tag-match-any">OR (하나라도 포함)</button>
+          <button class="btn small" id="tag-match-all">AND (모두 포함)</button>
+        </div>
+        <div class="small" style="margin-top:6px;">예) 태그 2개 선택 시 OR=둘 중 하나라도 포함 / AND=둘 다 포함</div>
+      </div>
+
+      <div class="field">
+        <label>태그 검색</label>
+        <input type="text" id="tag-search" placeholder="예) 가정법 / 도치 / 행정학" />
+      </div>
+
+      <div class="field">
+        <label>태그 선택</label>
+        <div id="tag-chips" class="tag-chips"></div>
+        <div id="tag-empty" class="small" style="margin-top:8px; display:none;">표시할 태그가 없습니다.</div>
+      </div>
+
+      <div class="row" style="justify-content: space-between; flex-wrap:wrap; gap:10px;">
+        <div class="small" id="tag-selected">선택: 0개</div>
+        <div class="row" style="gap:8px; flex-wrap:wrap;">
+          <button class="btn" id="tag-clear">전체 해제</button>
+          <button class="btn primary" id="tag-start">학습 시작</button>
+        </div>
+      </div>
+    `,
+    onMount: (root) => {
+      const baseEl = $('#tag-base', root);
+      const searchEl = $('#tag-search', root);
+      const chipsEl = $('#tag-chips', root);
+      const emptyEl = $('#tag-empty', root);
+      const selectedEl = $('#tag-selected', root);
+      const btnAny = $('#tag-match-any', root);
+      const btnAll = $('#tag-match-all', root);
+
+      let baseMode = initialMode;
+      let match = initialMatch;
+      let selected = new Set(initialTags);
+
+      function applyMatchButtons() {
+        const anyOn = match !== 'all';
+        btnAny.classList.toggle('primary', anyOn);
+        btnAll.classList.toggle('primary', !anyOn);
+      }
+
+      function setSelectedText() {
+        const arr = Array.from(selected);
+        if (arr.length === 0) {
+          selectedEl.textContent = '선택: 0개';
+          return;
+        }
+        const preview = arr.slice(0, 3).join(', ') + (arr.length > 3 ? ` +${arr.length - 3}` : '');
+        selectedEl.textContent = `선택: ${arr.length}개 (${preview})`;
+      }
+
+      function renderChips() {
+        const q = (searchEl.value || '').trim().toLowerCase();
+        const tags = getDeckTags(deckId, baseMode);
+
+        // Drop selections that no longer exist in this base set
+        const avail = new Set(tags);
+        selected = new Set(Array.from(selected).filter((t) => avail.has(t)));
+
+        const filtered = !q
+          ? tags
+          : tags.filter((t) => t.toLowerCase().includes(q));
+
+        chipsEl.innerHTML = '';
+        emptyEl.style.display = filtered.length ? 'none' : 'block';
+
+        filtered.forEach((t) => {
+          const chip = document.createElement('div');
+          chip.className = 'tag-chip' + (selected.has(t) ? ' selected' : '');
+          chip.textContent = t;
+          chip.addEventListener('click', () => {
+            if (selected.has(t)) selected.delete(t);
+            else selected.add(t);
+            setSelectedText();
+            chip.classList.toggle('selected');
+          });
+          chipsEl.appendChild(chip);
+        });
+
+        setSelectedText();
+      }
+
+      baseEl.value = baseMode;
+      applyMatchButtons();
+      renderChips();
+
+      baseEl.addEventListener('change', () => {
+        baseMode = normalizeStudyMode(baseEl.value);
+        renderChips();
+      });
+
+      btnAny.addEventListener('click', () => {
+        match = 'any';
+        applyMatchButtons();
+      });
+      btnAll.addEventListener('click', () => {
+        match = 'all';
+        applyMatchButtons();
+      });
+
+      searchEl.addEventListener('input', renderChips);
+
+      $('#tag-clear', root).addEventListener('click', () => {
+        selected = new Set();
+        renderChips();
+      });
+
+      $('#tag-start', root).addEventListener('click', () => {
+        const tagsArr = uniqueSorted(Array.from(selected));
+        // If no tags selected -> just normal study
+        const nextHash = buildStudyHash(deckId, baseMode, tagsArr, match);
+        closeModal();
+        location.hash = nextHash;
+      });
+    },
+  });
+}
+
 function renderHome() {
   setSubtitle('카테고리 목록');
 
@@ -526,6 +746,7 @@ function renderHome() {
     const s = deckStats(deck.id);
     const bmCount = deckBookmarkCount(deck.id);
     const wrongCount = deckWrongCount(deck.id);
+    const tagCount = getDeckTags(deck.id, 'all').length;
 
     const labelCards = isVocab ? '단어' : '문제';
     const labelWrong = isVocab ? '모름' : '오답';
@@ -547,6 +768,7 @@ function renderHome() {
         <button class="btn primary small" data-action="study">학습</button>
         <button class="btn small" data-action="bm" ${bmCount ? '' : 'disabled'}>북마크</button>
         <button class="btn small" data-action="wrong" ${wrongCount ? '' : 'disabled'}>${escapeText(labelWrong)}</button>
+        <button class="btn small" data-action="tags" ${tagCount ? '' : 'disabled'}>태그</button>
         <button class="btn small" data-action="manage">관리</button>
       </div>
     `;
@@ -565,6 +787,14 @@ function renderHome() {
     });
     el.querySelector('[data-action="manage"]').addEventListener('click', () => {
       location.hash = `#/deck/${deck.id}`;
+    });
+
+    el.querySelector('[data-action="tags"]').addEventListener('click', () => {
+      if (!tagCount) {
+        toast('태그가 없습니다');
+        return;
+      }
+      openTagStudyModal(deck.id, { mode: 'all', tags: [], tagMatch: 'any' });
     });
 
     grid.appendChild(el);
@@ -658,6 +888,7 @@ function renderDeck(deckId) {
   const s = deckStats(deckId);
   const bmCount = deckBookmarkCount(deckId);
   const wrongCount = deckWrongCount(deckId);
+  const tagCount = getDeckTags(deckId, 'all').length;
 
   setSubtitle(`${deck.name} · ${labelCards} ${s.cardsCount}개`);
 
@@ -675,6 +906,7 @@ function renderDeck(deckId) {
           <button class="btn primary small" id="btn-study">전체 학습</button>
           <button class="btn small" id="btn-study-bookmarks" ${bmCount ? '' : 'disabled'}>북마크 학습 (${bmCount})</button>
           <button class="btn small" id="btn-study-wrongs" ${wrongCount ? '' : 'disabled'}>${labelWrongOnly} 학습 (${wrongCount})</button>
+          <button class="btn small" id="btn-study-tags" ${tagCount ? '' : 'disabled'}>태그 학습 (${tagCount})</button>
           <button class="btn small" id="btn-edit-deck">카테고리 수정</button>
           <button class="btn danger small" id="btn-delete-deck">카테고리 삭제</button>
         </div>
@@ -712,6 +944,17 @@ function renderDeck(deckId) {
         return;
       }
       location.hash = `#/study/${deckId}?mode=wrongs`;
+    });
+  }
+
+  const tagBtn = $('#btn-study-tags');
+  if (tagBtn) {
+    tagBtn.addEventListener('click', () => {
+      if (!tagCount) {
+        toast('태그가 없습니다');
+        return;
+      }
+      openTagStudyModal(deckId, { mode: 'all', tags: [], tagMatch: 'any' });
     });
   }
 
@@ -1150,9 +1393,16 @@ function getCardIdsForMode(deckId, mode) {
   return all;
 }
 
-function newStudySession(deckId, mode = 'all', cardIds = null) {
+function newStudySession(deckId, mode = 'all', cardIds = null, tagFilter = null) {
   const m = normalizeStudyMode(mode);
   const ids = Array.isArray(cardIds) ? cardIds.slice() : getCardIdsForMode(deckId, m);
+
+  const tf = tagFilter && Array.isArray(tagFilter.tags) && tagFilter.tags.length
+    ? {
+        tags: uniqueSorted(tagFilter.tags),
+        match: String(tagFilter.match || '').toLowerCase() === 'all' ? 'all' : 'any',
+      }
+    : null;
 
   STUDY = {
     deckId,
@@ -1170,6 +1420,9 @@ function newStudySession(deckId, mode = 'all', cardIds = null) {
     correctCount: 0,
     wrongCount: 0,
     mode: m,
+
+    // optional tag filter
+    tagFilter: tf,
   };
 }
 
@@ -1215,10 +1468,20 @@ function renderStudy(deckId, opts = {}) {
   const requestedMode = hasMode ? normalizeStudyMode(opts.mode) : null;
   const desiredMode = requestedMode || (STUDY && STUDY.deckId === deckId ? STUDY.mode : 'all');
 
-  const desiredIds = getCardIdsForMode(deckId, desiredMode);
+  // Determine tag filter (tags + match)
+  const hasTags = Object.prototype.hasOwnProperty.call(opts || {}, 'tags');
+  const requestedTags = hasTags ? uniqueSorted(parseTagsParam(opts.tags)) : null;
+  const desiredTags = requestedTags ?? (STUDY && STUDY.deckId === deckId ? (STUDY.tagFilter?.tags || []) : []);
+
+  const hasTagMatch = Object.prototype.hasOwnProperty.call(opts || {}, 'tagMatch');
+  const requestedTagMatch = hasTagMatch ? (String(opts.tagMatch || '').toLowerCase() === 'all' ? 'all' : 'any') : null;
+  const desiredTagMatch = requestedTagMatch ?? (STUDY && STUDY.deckId === deckId ? (STUDY.tagFilter?.match || 'any') : 'any');
+
+  // Base ids (before tag filtering)
+  const baseIds = getCardIdsForMode(deckId, desiredMode);
 
   // 북마크 모드인데 북마크가 없으면 안내
-  if (desiredMode === 'bookmarks' && desiredIds.length === 0) {
+  if (desiredMode === 'bookmarks' && baseIds.length === 0) {
     setSubtitle(`${deck.name} · 북마크 학습`);
     appEl.innerHTML = `
       <div class="card">
@@ -1239,7 +1502,7 @@ function renderStudy(deckId, opts = {}) {
   }
 
   // 오답/모름 모드인데 대상이 없으면 안내
-  if (desiredMode === 'wrongs' && desiredIds.length === 0) {
+  if (desiredMode === 'wrongs' && baseIds.length === 0) {
     setSubtitle(`${deck.name} · ${labelWrongOnly} 학습`);
     appEl.innerHTML = `
       <div class="card">
@@ -1259,13 +1522,51 @@ function renderStudy(deckId, opts = {}) {
     return;
   }
 
+  // Apply tag filter
+  const desiredIds = filterCardIdsByTags(baseIds, desiredTags, desiredTagMatch);
+
+  // Tag filter produces empty set
+  if (desiredTags.length > 0 && desiredIds.length === 0) {
+    const baseTitle = desiredMode === 'bookmarks' ? '북마크 학습' : (desiredMode === 'wrongs' ? `${labelWrongOnly} 학습` : '학습');
+    setSubtitle(`${deck.name} · ${baseTitle} · 태그 0개`);
+    const preview = desiredTags.slice(0, 4).join(', ') + (desiredTags.length > 4 ? ` +${desiredTags.length - 4}` : '');
+    appEl.innerHTML = `
+      <div class="card">
+        <div style="font-weight: 850; font-size: 16px; margin-bottom: 8px;">선택한 태그에 해당하는 카드가 없습니다</div>
+        <div style="color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
+          현재 필터: <b>${escapeText(baseTitle)}</b> · 태그 <b>${escapeText(preview)}</b> · ${desiredTagMatch === 'all' ? 'AND(모두 포함)' : 'OR(하나라도 포함)'}<br>
+          태그를 다시 선택하거나, 필터를 해제해 주세요.
+        </div>
+        <div class="row" style="gap: 10px; flex-wrap: wrap;">
+          <button class="btn primary" id="go-tags">태그 다시 선택</button>
+          <button class="btn" id="go-clear">필터 해제</button>
+          <button class="btn" id="go-manage">카드 관리</button>
+        </div>
+      </div>
+    `;
+    $('#go-tags').addEventListener('click', () => openTagStudyModal(deckId, { mode: desiredMode, tags: desiredTags, tagMatch: desiredTagMatch }));
+    $('#go-clear').addEventListener('click', () => {
+      location.hash = buildStudyHash(deckId, desiredMode, [], 'any');
+    });
+    $('#go-manage').addEventListener('click', () => (location.hash = `#/deck/${deckId}`));
+    return;
+  }
+
+  const desiredTagFilter = desiredTags.length ? { tags: desiredTags, match: desiredTagMatch } : null;
+  const desiredTagKey = desiredTagFilter ? `${desiredTagFilter.match}|${desiredTagFilter.tags.join(',')}` : '';
+  const studyTagKey = STUDY?.tagFilter ? `${STUDY.tagFilter.match}|${(STUDY.tagFilter.tags || []).join(',')}` : '';
+  const tagChanged = desiredTagKey !== studyTagKey;
+
   // init session if needed (or mode changed)
-  if (!STUDY || STUDY.deckId !== deckId || (requestedMode && requestedMode !== STUDY.mode) || (STUDY && STUDY.queue && STUDY.queue.length === 0)) {
-    newStudySession(deckId, desiredMode, desiredIds);
+  if (!STUDY || STUDY.deckId !== deckId || (requestedMode && requestedMode !== STUDY.mode) || tagChanged || (STUDY && STUDY.queue && STUDY.queue.length === 0)) {
+    newStudySession(deckId, desiredMode, desiredIds, desiredTagFilter);
   }
 
   const modeTitle = STUDY.mode === 'bookmarks' ? '북마크 학습' : (STUDY.mode === 'wrongs' ? `${labelWrongOnly} 학습` : '학습');
-  setSubtitle(`${deck.name} · ${modeTitle}`);
+  const tfInfo = (STUDY.tagFilter && STUDY.tagFilter.tags && STUDY.tagFilter.tags.length)
+    ? ` · 태그 ${STUDY.tagFilter.tags.length}개`
+    : '';
+  setSubtitle(`${deck.name} · ${modeTitle}${tfInfo}`);
 
   // Summary
   if (STUDY.phase === 'summary') {
@@ -1277,6 +1578,10 @@ function renderStudy(deckId, opts = {}) {
         <div style="font-weight: 850; font-size: 18px;">학습 완료</div>
         <div style="margin-top: 10px; color: var(--muted); line-height: 1.6;">
           모드: <b>${STUDY.mode === 'bookmarks' ? '북마크' : (STUDY.mode === 'wrongs' ? labelWrongOnly : '전체')}</b><br>
+          ${STUDY.tagFilter && STUDY.tagFilter.tags && STUDY.tagFilter.tags.length
+            ? `태그: <b>${escapeText(STUDY.tagFilter.tags.slice(0,4).join(', ') + (STUDY.tagFilter.tags.length>4 ? ` +${STUDY.tagFilter.tags.length-4}` : ''))}</b> · ${STUDY.tagFilter.match === 'all' ? 'AND' : 'OR'}<br>`
+            : ''
+          }
           총 ${total}개 중 <b>${labelCorrect} ${STUDY.correctCount}</b>, <b>${labelWrong} ${STUDY.wrongCount}</b> · ${isVocab ? '알았음률' : '정답률'} <b>${acc}%</b>
         </div>
         <div class="hr"></div>
@@ -1304,7 +1609,7 @@ function renderStudy(deckId, opts = {}) {
     });
 
     $('#btn-restart').addEventListener('click', () => {
-      newStudySession(deckId, STUDY.mode);
+      newStudySession(deckId, STUDY.mode, null, STUDY.tagFilter);
       renderStudy(deckId);
     });
 
@@ -1347,10 +1652,26 @@ function renderStudy(deckId, opts = {}) {
   const showMnemonic = mnemonic ? escapeText(mnemonic) : null;
   const showExample = example ? escapeText(example) : null;
 
+  // Tag filter info (if any)
+  const tf = STUDY.tagFilter;
+  const tagLabel = (tf && tf.tags && tf.tags.length)
+    ? (() => {
+        const preview = tf.tags.slice(0, 2).join(', ') + (tf.tags.length > 2 ? ` +${tf.tags.length - 2}` : '');
+        return `태그 ${preview}`;
+      })()
+    : '태그';
+  const tagMatchPill = (tf && tf.tags && tf.tags.length)
+    ? `<span class="pill">${tf.match === 'all' ? 'AND' : 'OR'}</span>`
+    : '';
+
   appEl.innerHTML = `
     <div class="study-card">
       <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
-        <span class="pill">${pos} / ${total}</span>
+        <div class="row" style="gap: 8px; flex-wrap: wrap;">
+          <span class="pill">${pos} / ${total}</span>
+          <button class="btn small" id="btn-tagfilter">${escapeText(tagLabel)}</button>
+          ${tagMatchPill}
+        </div>
         <div style="display:flex; gap: 8px; align-items:center;">
           <button class="btn small" id="btn-bookmark">${bookmarked ? '★ 북마크' : '☆ 북마크'}</button>
           <span class="pill">${labelWrong} ${STUDY.wrongCount}</span>
@@ -1456,6 +1777,17 @@ function renderStudy(deckId, opts = {}) {
       const next = toggleBookmark(card.id);
       toast(next ? '북마크됨' : '북마크 해제');
       renderStudy(deckId);
+    });
+  }
+
+  const tagBtn = $('#btn-tagfilter');
+  if (tagBtn) {
+    tagBtn.addEventListener('click', () => {
+      openTagStudyModal(deckId, {
+        mode: STUDY.mode,
+        tags: STUDY.tagFilter?.tags || [],
+        tagMatch: STUDY.tagFilter?.match || 'any',
+      });
     });
   }
 
@@ -2266,7 +2598,7 @@ function renderRoute() {
   }
 
   if (head === 'study' && id) {
-    renderStudy(id, { mode: query.mode });
+    renderStudy(id, { mode: query.mode, tags: query.tags || '', tagMatch: query.tagMatch || query.tagmatch || '' });
     return;
   }
 
