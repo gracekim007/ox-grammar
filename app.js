@@ -68,6 +68,92 @@ function escapeText(s) {
     .replaceAll("'", '&#039;');
 }
 
+function renderMultiline(s) {
+  return escapeText(
+    String(s ?? '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+  ).replace(/\n/g, '<br>');
+}
+
+function hasLineBreak(s) {
+  return /<br\s*\/?>|\r?\n/.test(String(s ?? ''));
+}
+
+function splitVocabFront(prompt, example = '') {
+  const rawPrompt = String(prompt ?? '').trim();
+  const rawExample = String(example ?? '').trim();
+
+  if (!rawPrompt) {
+    return { word: '', sentence: rawExample };
+  }
+
+  // prompt 안에 이미 줄바꿈 / <br> 이 들어있으면 첫 줄=단어, 나머지=예문
+  if (hasLineBreak(rawPrompt)) {
+    const normalized = rawPrompt
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n');
+
+    const [first, ...rest] = normalized.split('\n');
+
+    return {
+      word: first.trim(),
+      sentence: rawExample || rest.join('\n').trim(),
+    };
+  }
+
+  // example 필드가 따로 있으면 그걸 2줄째로 사용
+  if (rawExample) {
+    return {
+      word: rawPrompt,
+      sentence: rawExample,
+    };
+  }
+
+  // 잘못 저장된 형태 보정
+  // 예: "urgent reliefThe victims needed urgent relief..."
+  const firstUpperIdx = rawPrompt.search(/[A-Z]/);
+  if (firstUpperIdx > 0) {
+    const before = rawPrompt.slice(0, firstUpperIdx).trim();
+    const after = rawPrompt.slice(firstUpperIdx).trim();
+
+    const looksLikeWord =
+      before.length >= 4 &&
+      before === before.toLowerCase() &&
+      /^[a-z0-9' -]{1,80}$/i.test(before);
+
+    const looksLikeSentence =
+      /^[A-Z]/.test(after) &&
+      after.split(/\s+/).length >= 3;
+
+    if (looksLikeWord && looksLikeSentence) {
+      return {
+        word: before,
+        sentence: after,
+      };
+    }
+  }
+
+  return {
+    word: rawPrompt,
+    sentence: '',
+  };
+}
+
+function singleLinePreview(s, maxLen = 44) {
+  const plain = String(s ?? '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/\r\n/g, ' ')
+    .replace(/\r/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return plain.length > maxLen ? plain.slice(0, maxLen) + '…' : plain;
+}
+
 // -------------------------
 // Storage
 // -------------------------
@@ -213,7 +299,6 @@ function defaultData() {
   };
 }
 
-
 function loadData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -282,6 +367,24 @@ function normalizeData(data) {
     if (isVocabDeck) {
       if (!c.meaning && c.explanation) c.meaning = String(c.explanation || '').trim();
       if (c.meaning && !c.explanation) c.explanation = String(c.meaning || '').trim();
+
+      // Old malformed prompt migration:
+      // - prompt: "word<br>example"
+      // - prompt: "wordExample sentence..."
+      const originalPrompt = String(c.prompt || '');
+      const originalExample = String(c.example || '');
+      const splitFront = splitVocabFront(originalPrompt, originalExample);
+
+      let migrated = false;
+      if (splitFront.word && splitFront.word !== originalPrompt) {
+        c.prompt = splitFront.word;
+        migrated = true;
+      }
+      if (!originalExample.trim() && splitFront.sentence) {
+        c.example = splitFront.sentence;
+        migrated = true;
+      }
+      if (migrated) c.updatedAt = now();
     }
 
     if (!Array.isArray(c.tags)) c.tags = [];
@@ -309,7 +412,6 @@ function normalizeData(data) {
 
   return d;
 }
-
 
 let DATA = loadData();
 
@@ -450,8 +552,6 @@ function deckStats(deckId) {
   return { cardsCount: cards.length, correct, wrong, total, acc };
 }
 
-
-
 function isBookmarked(cardId) {
   const card = DATA.cards?.find((c) => c.id === cardId);
   if (card && typeof card.bookmarked === 'boolean') return card.bookmarked;
@@ -558,7 +658,7 @@ function openTagStudyModal(deckId, opts = {}) {
   const labelWrongOnly = isVocab ? '모름' : '오답';
 
   const initialMode = normalizeStudyMode(opts.mode || 'all');
-  const initialMatch = String(opts.tagMatch || 'any').toLowerCase() === 'all' ? 'all' : 'any';
+  const initialMatch = String(opts.tagMatch || '').toLowerCase() === 'all' ? 'all' : 'any';
   const initialTags = uniqueSorted(Array.isArray(opts.tags) ? opts.tags : parseTagsParam(opts.tags));
 
   openModal({
@@ -801,7 +901,6 @@ function renderHome() {
   });
 }
 
-
 function openDeckModal(existingDeck = null) {
   const isEdit = !!existingDeck;
   const deck = existingDeck || { name: '', description: '', type: 'grammar' };
@@ -867,7 +966,6 @@ function openDeckModal(existingDeck = null) {
     },
   });
 }
-
 
 function renderDeck(deckId) {
   const deck = getDeck(deckId);
@@ -1015,8 +1113,12 @@ function renderDeck(deckId) {
 
         const meaning = String(c.meaning || c.explanation || '').trim();
         const meaningPreview = isVocab && meaning
-          ? ` · 뜻 ${escapeText(meaning.length > 44 ? meaning.slice(0, 44) + '…' : meaning)}`
+          ? ` · 뜻 ${escapeText(singleLinePreview(meaning, 44))}`
           : '';
+
+        const titleHtml = isVocab
+          ? renderMultiline(splitVocabFront(c.prompt, c.example || '').word)
+          : renderMultiline(c.prompt);
 
         const sub = isVocab
           ? `기록 ${total}회 · 알았음 ${(st.correct || 0)} · 모름 ${(st.wrong || 0)}${acc}${tags ? ` · 태그 ${escapeText(tags)}` : ''}${meaningPreview}`
@@ -1026,7 +1128,7 @@ function renderDeck(deckId) {
         row.className = 'item';
         row.innerHTML = `
           <div>
-            <div class="item-title">${escapeText(c.prompt)}</div>
+            <div class="item-title">${titleHtml}</div>
             <div class="item-sub">${sub}</div>
           </div>
           <div class="item-actions">
@@ -1062,7 +1164,6 @@ function renderDeck(deckId) {
   searchEl.addEventListener('input', renderList);
   renderList();
 }
-
 
 function openCardModal({ deckId, card }) {
   const deck = getDeck(deckId);
@@ -1156,21 +1257,15 @@ function openCardModal({ deckId, card }) {
           const mnemonic = $('#card-mnemonic', root).value.trim();
           const example = $('#card-example', root).value.trim();
 
-          if (!meaning) {
-            // 뜻은 사실상 필수(그래도 저장은 가능하도록 완화)
-            // alert('뜻을 입력해 주세요.');
-            // return;
-          }
-
           if (isEdit) {
             const target = DATA.cards.find((x) => x.id === c.id);
             if (!target) return;
             target.prompt = prompt;
-            target.answer = 'O';            // ✅ vocab deck: fixed
+            target.answer = 'O';
             target.meaning = meaning;
             target.mnemonic = mnemonic;
             target.example = example;
-            target.explanation = meaning;    // ✅ 검색/호환용
+            target.explanation = meaning;
             target.tags = tags;
             target.updatedAt = now();
           } else {
@@ -1179,11 +1274,11 @@ function openCardModal({ deckId, card }) {
               id,
               deckId,
               prompt,
-              answer: 'O',                  // ✅ fixed
+              answer: 'O',
               meaning,
               mnemonic,
               example,
-              explanation: meaning,          // ✅ 검색/호환용
+              explanation: meaning,
               tags,
               createdAt: now(),
               updatedAt: now(),
@@ -1228,7 +1323,6 @@ function openCardModal({ deckId, card }) {
     },
   });
 }
-
 
 function openBulkAddModal(deckId) {
   const deck = getDeck(deckId);
@@ -1371,7 +1465,6 @@ function openBulkAddModal(deckId) {
   });
 }
 
-
 // -------------------------
 // Study mode
 // -------------------------
@@ -1425,7 +1518,6 @@ function newStudySession(deckId, mode = 'all', cardIds = null, tagFilter = null)
     tagFilter: tf,
   };
 }
-
 
 function resetPerCardState() {
   if (!STUDY) return;
@@ -1648,9 +1740,24 @@ function renderStudy(deckId, opts = {}) {
 
   const expl = card.explanation?.trim() ? card.explanation.trim() : '(설명 없음)';
 
-  const showMeaning = meaning ? escapeText(meaning) : '(뜻 없음)';
-  const showMnemonic = mnemonic ? escapeText(mnemonic) : null;
-  const showExample = example ? escapeText(example) : null;
+  const showMeaning = meaning ? renderMultiline(meaning) : '(뜻 없음)';
+  const showMnemonic = mnemonic ? renderMultiline(mnemonic) : null;
+  const showExample = example ? renderMultiline(example) : null;
+
+  const vocabFront = isVocab ? splitVocabFront(card.prompt, example) : null;
+
+  const frontPromptHTML = isVocab
+    ? `
+        <div class="study-prompt">${renderMultiline(vocabFront.word)}</div>
+        ${
+          vocabFront.sentence
+            ? `<div style="margin-top:10px; font-size:20px; line-height:1.5; color:var(--muted); font-weight:600;">
+                 ${renderMultiline(vocabFront.sentence)}
+               </div>`
+            : ''
+        }
+      `
+    : `<div class="study-prompt">${renderMultiline(card.prompt)}</div>`;
 
   // Tag filter info (if any)
   const tf = STUDY.tagFilter;
@@ -1678,7 +1785,7 @@ function renderStudy(deckId, opts = {}) {
         </div>
       </div>
 
-      <div class="study-prompt">${escapeText(card.prompt)}</div>
+      ${frontPromptHTML}
 
       ${answered ? `
         <div class="card" style="margin: 10px 0 12px; background: var(--card);">
@@ -1702,7 +1809,7 @@ function renderStudy(deckId, opts = {}) {
               <div class="answer-badge">${escapeText(card.answer)}</div>
               <div>내 선택: <b>${escapeText(STUDY.choice)}</b> · 정답: <b>${escapeText(card.answer)}</b></div>
             </div>
-            <div class="study-expl">${escapeText(expl)}</div>
+            <div class="study-expl">${renderMultiline(expl)}</div>
           `}
         </div>
 
@@ -1824,8 +1931,6 @@ function renderStudy(deckId, opts = {}) {
   if (nextBtn) nextBtn.addEventListener('click', goNext);
 }
 
-
-
 // -------------------------
 // Import / Export
 // -------------------------
@@ -1943,7 +2048,7 @@ function renderImportExport() {
         1) <b>전체 백업</b>: <span class="kbd">{ decks: [...], cards: [...], stats: {...} }</span><br>
         2) <b>카드 배열</b>: <span class="kbd">[{ prompt, ... }, ...]</span> (선택한 카테고리에 추가)<br>
         · 문법 OX: <span class="kbd">{ prompt, answer, explanation?, tags? }</span><br>
-        · 단어장: <span class="kbd">{ prompt, meaning, mnemonic?, example?, tags? }</span>
+        · 단어장: <span class="kbd">{ prompt, meaning, mnemonic?, example? , tags? }</span>
       </div>
     </div>
   `;
@@ -2495,8 +2600,6 @@ function mergeVocabDuplicatesInDeck(deckId) {
 
   return { index: byKey, mergedExisting };
 }
-
-
 
 // -------------------------
 // About
