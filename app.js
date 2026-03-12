@@ -71,6 +71,15 @@ function escapeText(s) {
     .replaceAll("'", '&#039;');
 }
 
+function renderMultiline(s) {
+  return escapeText(String(s ?? '')).replace(/\n/g, '<br>');
+}
+
+function isEnglishVocabDeck(deck) {
+  const name = String(deck?.name || '');
+  return String(deck?.type || '').toLowerCase() === 'vocab' && /(영단어|english|eng|vocab)/i.test(name);
+}
+
 // -------------------------
 // Storage
 // -------------------------
@@ -426,7 +435,7 @@ function parseRoute() {
   return { parts, query };
 }
 
-window.addEventListener('hashchange', renderRoute);
+window.addEventListener('hashchange', safeRenderRoute);
 
 // -------------------------
 // Views
@@ -1670,6 +1679,7 @@ function renderStudy(deckId, opts = {}) {
 
   const answered = !!STUDY.answered;
   const bookmarked = isBookmarked(card.id);
+  const isEnglishVocab = isEnglishVocabDeck(deck);
 
   // vocab fields
   const meaning = String(card.meaning || card.explanation || '').trim();
@@ -1729,12 +1739,12 @@ function renderStudy(deckId, opts = {}) {
               <div>내 선택: <b>${escapeText(STUDY.choice)}</b> (${STUDY.choice === 'O' ? '앎' : '모름'})</div>
             </div>
 
-            <div class="study-expl" style="line-height: 1.7;">
-              <div><b>단어</b>: ${renderMultiline(card.prompt)}</div>
-              <div style="margin-top: 6px;"><b>뜻</b>: ${showMeaning}</div>
-              ${showExample ? `<div style="margin-top: 6px;"><b>예문</b>: ${showExample}</div>` : ''}
-              ${showExampleMeaning ? `<div style="margin-top: 6px;"><b>해석</b>: ${showExampleMeaning}</div>` : ''}
-              ${showMnemonic ? `<div style="margin-top: 6px;"><b>연상</b>: ${showMnemonic}</div>` : ''}
+            <div class="study-expl vocab-back" style="line-height: 1.7;">
+              <div class="vocab-back-word">${renderMultiline(card.prompt)}</div>
+              ${meaning ? `<div class="vocab-back-meaning">${showMeaning}</div>` : ''}
+              ${showExample ? `<div class="vocab-back-example">${showExample}</div>` : ''}
+              ${showExampleMeaning ? `<div class="vocab-back-example-meaning">${showExampleMeaning}</div>` : ''}
+              ${showMnemonic ? `<div class="vocab-back-mnemonic">연상: ${showMnemonic}</div>` : ''}
             </div>
           ` : `
             <div class="study-answer" style="margin-bottom: 8px;">
@@ -2669,6 +2679,35 @@ function renderRoute() {
   // Fallback
   appEl.innerHTML = `<div class="card">페이지를 찾을 수 없습니다.</div>`;
   setSubtitle('');
+}
+
+
+function safeRenderRoute() {
+  try {
+    renderRoute();
+  } catch (e) {
+    console.error('Render failed', e);
+    STUDY = null;
+    clearStudyState();
+    setSubtitle('오류');
+    appEl.innerHTML = `
+      <div class="card">
+        <div style="font-weight:800; font-size:16px; margin-bottom:8px;">화면을 불러오지 못했어요</div>
+        <div style="font-size:13px; color: var(--muted); line-height:1.6;">
+          업데이트 직후 캐시나 이전 학습 상태 때문에 꼬였을 수 있어요.<br>
+          아래 버튼으로 홈으로 돌아가거나, 새로고침 후 다시 시도해 주세요.
+        </div>
+        <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:12px;">
+          <button class="btn primary" id="btn-safe-home">홈으로</button>
+          <button class="btn" id="btn-safe-reload">새로고침</button>
+        </div>
+      </div>
+    `;
+    const homeBtn = $('#btn-safe-home');
+    if (homeBtn) homeBtn.addEventListener('click', () => { location.hash = '#/'; renderRoute(); });
+    const reloadBtn = $('#btn-safe-reload');
+    if (reloadBtn) reloadBtn.addEventListener('click', () => location.reload());
+  }
 }
 
 
@@ -4529,4 +4568,4 @@ function maybeAutoResumeOnLoad() {
 
 // Initial render (patched)
 maybeAutoResumeOnLoad();
-renderRoute();
+safeRenderRoute();

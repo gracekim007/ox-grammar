@@ -416,3 +416,39 @@ textarea {
   padding: 2px 6px;
   border-radius: 8px;
 }
+
+
+.vocab-back {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vocab-back-word {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.vocab-back-meaning {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.vocab-back-example {
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.vocab-back-example-meaning {
+  font-size: 15px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.vocab-back-mnemonic {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.6;
+}
