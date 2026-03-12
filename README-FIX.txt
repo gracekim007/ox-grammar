@@ -1,1 +1,0 @@
-v16 fix: removed duplicate function declarations causing SyntaxError (renderHome/renderDeck/openCardModal/openBulkAddModal/importObject/maybeAutoResumeOnLoad). index now loads app-v16.js?v=16. For safety, app.js and app-v15.js are also synced to the same fixed content.
