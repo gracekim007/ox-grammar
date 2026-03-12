@@ -1,11 +1,12 @@
 /* OX 문법 PWA service worker */
 
-const CACHE_NAME = 'ox-grammar-cache-v14-rootfix';
+const CACHE_NAME = 'ox-grammar-cache-v17-studyfix';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './app-v17.js',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png'
