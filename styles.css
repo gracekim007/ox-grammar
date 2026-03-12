@@ -1,3 +1,6 @@
+html { color-scheme: light; }
+html[data-theme="dark"] { color-scheme: dark; }
+
 :root {
   --bg: #ffffff;
   --fg: #111111;
@@ -451,4 +454,82 @@ textarea {
   font-size: 14px;
   color: var(--muted);
   line-height: 1.6;
+}
+
+
+/* Dark mode */
+html[data-theme="dark"] {
+  --bg: #0f1115;
+  --fg: #f3f5f7;
+  --muted: #a7b0bb;
+  --border: #2a323d;
+  --card: #171c23;
+  --danger: #ff7b72;
+  --shadow: 0 8px 28px rgba(0,0,0,0.35);
+}
+
+html[data-theme="dark"] .app-header {
+  background: rgba(15,17,21,0.92);
+}
+
+html[data-theme="dark"] .icon-btn,
+html[data-theme="dark"] .btn,
+html[data-theme="dark"] .tag-chip,
+html[data-theme="dark"] .item,
+html[data-theme="dark"] .study-card,
+html[data-theme="dark"] .drawer-inner,
+html[data-theme="dark"] .drawer-item,
+html[data-theme="dark"] .modal,
+html[data-theme="dark"] input[type="text"],
+html[data-theme="dark"] input[type="number"],
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select {
+  background: #11161d;
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+html[data-theme="dark"] .btn.primary,
+html[data-theme="dark"] .tag-chip.selected {
+  background: #f3f5f7;
+  color: #111111;
+  border-color: #f3f5f7;
+}
+
+html[data-theme="dark"] .btn.danger {
+  background: #11161d;
+  color: var(--danger);
+  border-color: rgba(255,123,114,0.55);
+}
+
+html[data-theme="dark"] .pill,
+html[data-theme="dark"] .answer-badge,
+html[data-theme="dark"] .kbd,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .tag-chip,
+html[data-theme="dark"] .study-card {
+  background-color: var(--card);
+}
+
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .item,
+html[data-theme="dark"] .study-card,
+html[data-theme="dark"] .modal,
+html[data-theme="dark"] .drawer-inner {
+  border-color: var(--border);
+}
+
+html[data-theme="dark"] .drawer,
+html[data-theme="dark"] .modal-backdrop {
+  background: rgba(0,0,0,0.58);
+}
+
+html[data-theme="dark"] .toast {
+  background: rgba(243,245,247,0.94);
+  color: #111111;
+}
+
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: #75808d;
 }

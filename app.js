@@ -8,6 +8,7 @@ const APP_DATA_VERSION = 2;
 const STUDY_STATE_KEY = 'oxGrammarStudyState.v1';
 const DEFAULT_DAILY_NEW_COUNT = 30;
 const DEFAULT_REVIEW_INTERVALS = [1, 3, 7, 14, 30];
+const THEME_KEY = 'oxGrammarTheme.v1';
 
 // -------------------------
 // Utils
@@ -356,6 +357,46 @@ function toast(msg) {
   }, 2200);
 }
 
+function getSystemTheme() {
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function getSavedTheme() {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved === 'dark' || saved === 'light' ? saved : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function applyTheme(theme, opts = {}) {
+  const persist = opts.persist ?? true;
+  const quiet = opts.quiet ?? false;
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  document.body.dataset.theme = next;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', next === 'dark' ? '#0f1115' : '#ffffff');
+  if (persist) {
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  }
+  const btn = $('#btn-theme');
+  if (btn) btn.textContent = next === 'dark' ? '☀ 라이트 모드' : '🌙 다크 모드';
+  if (!quiet) toast(next === 'dark' ? '다크모드 ON' : '라이트 모드 ON');
+}
+
+function toggleTheme() {
+  const current = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+  applyTheme(current === 'dark' ? 'light' : 'dark');
+  closeDrawer();
+}
+
+function syncThemeWithSystemIfNeeded() {
+  if (getSavedTheme()) return;
+  applyTheme(getSystemTheme(), { persist: false, quiet: true });
+}
+
 function openModal({ title, bodyHTML, onMount }) {
   modalEl.innerHTML = `
     <h2>${escapeText(title)}</h2>
@@ -423,6 +464,14 @@ $('#btn-reset').addEventListener('click', () => {
   location.hash = '#/';
   renderRoute();
 });
+
+$('#btn-theme')?.addEventListener('click', toggleTheme);
+applyTheme(getSavedTheme() || getSystemTheme(), { persist: false, quiet: true });
+if (window.matchMedia) {
+  const __themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+  if (__themeMedia.addEventListener) __themeMedia.addEventListener('change', syncThemeWithSystemIfNeeded);
+  else if (__themeMedia.addListener) __themeMedia.addListener(syncThemeWithSystemIfNeeded);
+}
 
 // -------------------------
 // Routing
