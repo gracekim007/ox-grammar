@@ -4,7 +4,7 @@
 */
 
 const STORAGE_KEY = 'oxGrammarData.v2';
-const APP_DATA_VERSION = 2;
+const APP_DATA_VERSION = 3;
 const STUDY_STATE_KEY = 'oxGrammarStudyState.v1';
 const DEFAULT_DAILY_NEW_COUNT = 30;
 const DEFAULT_REVIEW_INTERVALS = [1, 3, 7, 14, 30];
@@ -61,6 +61,53 @@ function normalizePromptKey(s) {
     .toLowerCase()
     .replace(/\s+/g, ' ');
 }
+
+function normalizeStringArray(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => String(v ?? '').trim())
+      .filter(Boolean);
+  }
+  const s = String(value ?? '').trim();
+  if (!s) return [];
+  return s
+    .split(/[\n,，;；|｜]+/)
+    .map((v) => String(v ?? '').trim())
+    .filter(Boolean);
+}
+
+function derivePolysemyFromMeaning(meaning) {
+  const raw = String(meaning ?? '').trim();
+  if (!raw) return [];
+  let out = [];
+  if (/[①②③④⑤⑥⑦⑧⑨⑩]/.test(raw)) {
+    out = raw
+      .split(/(?=[①②③④⑤⑥⑦⑧⑨⑩])/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+  } else if (/[;；]/.test(raw)) {
+    out = raw
+      .split(/[;；]/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+  } else if (/\s*\/\s*/.test(raw)) {
+    out = raw
+      .split(/\s*\/\s*/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+  } else {
+    out = [raw];
+  }
+  return Array.from(new Set(out.map((v) => String(v).trim()).filter(Boolean)));
+}
+
+function formatPronunciationText(value) {
+  const s = String(value ?? '').trim();
+  if (!s) return '';
+  if (s.startsWith('/') || s.startsWith('[')) return s;
+  return `/${s}/`;
+}
+
 
 function escapeText(s) {
   // For safety when interpolating into HTML.
@@ -293,6 +340,9 @@ function normalizeData(data) {
     if (typeof c.mnemonic !== 'string') c.mnemonic = '';
     if (typeof c.example !== 'string') c.example = '';
     if (typeof c.exampleMeaning !== 'string') c.exampleMeaning = '';
+    if (typeof c.pronunciation !== 'string') c.pronunciation = '';
+    c.synonyms = normalizeStringArray(c.synonyms ?? c.synonym ?? c.syns ?? '');
+    c.polysemy = normalizeStringArray(c.polysemy ?? c.senses ?? '');
 
     // Backward compatibility:
     // - Some vocab cards may have meaning stored in explanation
@@ -1413,6 +1463,15 @@ function renderStudy(deckId, opts = {}) {
   const mnemonic = String(card.mnemonic || '').trim();
   const example = String(card.example || '').trim();
   const exampleMeaning = String(card.exampleMeaning || '').trim();
+  const pronunciation = String(card.pronunciation || card.ipa || '').trim();
+  const synonyms = normalizeStringArray(card.synonyms ?? card.synonym ?? '');
+  const rawPolysemy = normalizeStringArray(card.polysemy ?? card.senses ?? '');
+  const derivedPolysemy = rawPolysemy.length ? rawPolysemy : derivePolysemyFromMeaning(meaning);
+  const polysemy = derivedPolysemy.filter((item, idx) => {
+    const normItem = normalizePromptKey(item);
+    const normMeaning = normalizePromptKey(meaning);
+    return item && (normItem !== normMeaning || idx !== 0);
+  });
 
   const expl = card.explanation?.trim() ? card.explanation.trim() : '(설명 없음)';
 
@@ -1420,6 +1479,9 @@ function renderStudy(deckId, opts = {}) {
   const showMnemonic = mnemonic ? renderMultiline(mnemonic) : null;
   const showExample = example ? renderMultiline(example) : null;
   const showExampleMeaning = exampleMeaning ? renderMultiline(exampleMeaning) : null;
+  const showPronunciation = pronunciation ? escapeText(formatPronunciationText(pronunciation)) : null;
+  const showSynonyms = synonyms.length ? synonyms.map((x) => escapeText(x)).join(', ') : null;
+  const showPolysemy = polysemy.length ? `<ol>${polysemy.map((x) => `<li>${renderMultiline(x)}</li>`).join('')}</ol>` : null;
 
   // Tag filter info (if any)
   const tf = STUDY.tagFilter;
@@ -1449,6 +1511,7 @@ function renderStudy(deckId, opts = {}) {
 
       ${isVocab ? `
         <div class="study-prompt">${renderMultiline(card.prompt)}</div>
+        ${showPronunciation ? `<div class="vocab-front-pron">${showPronunciation}</div>` : ''}
         ${showExample ? `<div style="margin-top:10px; font-size:18px; line-height:1.6; color: var(--muted); font-weight:600;">${showExample}</div>` : ''}
       ` : `
         <div class="study-prompt">${escapeText(card.prompt)}</div>
@@ -1468,7 +1531,10 @@ function renderStudy(deckId, opts = {}) {
 
             <div class="study-expl vocab-back" style="line-height: 1.7;">
               <div class="vocab-back-word">${renderMultiline(card.prompt)}</div>
+              ${showPronunciation ? `<div class="vocab-back-pron">${showPronunciation}</div>` : ''}
               ${meaning ? `<div class="vocab-back-meaning">${showMeaning}</div>` : ''}
+              ${showPolysemy ? `<div class="vocab-back-polysemy"><div class="vocab-meta-label">다의어</div>${showPolysemy}</div>` : ''}
+              ${showSynonyms ? `<div class="vocab-back-synonyms"><div class="vocab-meta-label">동의어</div><div>${showSynonyms}</div></div>` : ''}
               ${showExample ? `<div class="vocab-back-example">${showExample}</div>` : ''}
               ${showExampleMeaning ? `<div class="vocab-back-example-meaning">${showExampleMeaning}</div>` : ''}
               ${showMnemonic ? `<div class="vocab-back-mnemonic">연상: ${showMnemonic}</div>` : ''}
@@ -1717,7 +1783,7 @@ function renderImportExport() {
 
       <div class="field">
         <label>붙여넣기 (ChatGPT가 준 JSON)</label>
-        <textarea id="paste" placeholder='예) 문법: [{"prompt":"...","answer":"O","explanation":"..."}, ...] / 단어: [{"prompt":"avalanche","meaning":"n. ...","mnemonic":"...","example":"An avalanche of complaints followed.","exampleMeaning":"항의가 눈사태처럼 쏟아졌다."}, ...]'></textarea>
+        <textarea id="paste" placeholder='예) 문법: [{"prompt":"...","answer":"O","explanation":"..."}, ...] / 단어: [{"prompt":"avalanche","meaning":"n. 눈사태","pronunciation":"ˈævəlæntʃ","synonyms":["snowslide"],"polysemy":["n. 눈사태","(비유) 쇄도"],"mnemonic":"...","example":"An avalanche of complaints followed.","exampleMeaning":"항의가 눈사태처럼 쏟아졌다."}, ...]'></textarea>
       </div>
       <div class="row" style="gap: 10px; flex-wrap: wrap;">
         <select id="paste-target" style="flex: 1; min-width: 180px;">
@@ -1765,7 +1831,7 @@ function renderImportExport() {
         1) <b>전체 백업</b>: <span class="kbd">{ decks: [...], cards: [...], stats: {...} }</span><br>
         2) <b>카드 배열</b>: <span class="kbd">[{ prompt, ... }, ...]</span> (선택한 카테고리에 추가)<br>
         · 문법 OX: <span class="kbd">{ prompt, answer, explanation?, tags? }</span><br>
-        · 단어장: <span class="kbd">{ prompt, meaning, mnemonic?, example?, exampleMeaning?, tags? }</span>
+        · 단어장: <span class="kbd">{ prompt, meaning, pronunciation?, synonyms?, polysemy?, mnemonic?, example?, exampleMeaning?, tags? }</span>
       </div>
     </div>
   `;
@@ -1880,7 +1946,7 @@ function parseSpreadsheetTable(text, targetDeckId) {
 
   // Header detection
   const header = rows[0].map((x) => String(x || '').trim());
-  const hasHeader = header.some((h) => /키워드|용어|term|word|뜻|의미|meaning|예문해석|해석|exampleMeaning|example_ko|exampleKo|해설|설명|explanation|answer|정답/i.test(h));
+  const hasHeader = header.some((h) => /키워드|용어|term|word|뜻|의미|meaning|발음|pronunciation|ipa|동의어|synonym|다의어|polysemy|예문해석|해석|exampleMeaning|example_ko|exampleKo|해설|설명|explanation|answer|정답/i.test(h));
 
   const dataRows = hasHeader ? rows.slice(1) : rows;
 
@@ -1891,18 +1957,27 @@ function parseSpreadsheetTable(text, targetDeckId) {
   };
 
   if (isVocab) {
+    const maxCols = Math.max(0, ...dataRows.map((r) => r.length));
+    const legacyCompact = !hasHeader && maxCols <= 5;
+
     const idxPrompt = colIndex([/키워드/i, /용어/i, /^term$/i, /^word$/i], 0);
     const idxMeaning = colIndex([/뜻/i, /의미/i, /^meaning$/i, /정의/i, /설명/i], 1);
-    const idxMnemonic = colIndex([/연상/i, /암기/i, /^mnemonic$/i, /assoc/i], 2);
-    const idxExample = colIndex([/예문/i, /^example$/i, /sentence/i], 3);
-    const idxExampleMeaning = colIndex([/예문해석/i, /해석/i, /^exampleMeaning$/i, /example_ko/i, /exampleKo/i], 4);
-    const idxTags = colIndex([/^tags?$/i, /태그/i], 5);
+    const idxPronunciation = colIndex([/발음/i, /^pronunciation$/i, /^ipa$/i, /phonetic/i], legacyCompact ? -1 : 2);
+    const idxSynonyms = colIndex([/동의어/i, /^synonyms?$/i], legacyCompact ? -1 : 3);
+    const idxPolysemy = colIndex([/다의어/i, /^polysemy$/i, /^senses?$/i], legacyCompact ? -1 : 4);
+    const idxMnemonic = colIndex([/연상/i, /암기/i, /^mnemonic$/i, /assoc/i], legacyCompact ? 2 : 5);
+    const idxExample = colIndex([/예문/i, /^example$/i, /sentence/i], legacyCompact ? 3 : 6);
+    const idxExampleMeaning = colIndex([/예문해석/i, /해석/i, /^exampleMeaning$/i, /example_ko/i, /exampleKo/i], legacyCompact ? 4 : 7);
+    const idxTags = colIndex([/^tags?$/i, /태그/i], legacyCompact ? 5 : 8);
 
     const out = [];
     for (const r of dataRows) {
       const prompt = String(r[idxPrompt] ?? '').trim();
       const meaning = String(r[idxMeaning] ?? '').trim();
       if (!prompt) continue;
+      const pronunciation = idxPronunciation >= 0 ? String(r[idxPronunciation] ?? '').trim() : '';
+      const synonyms = idxSynonyms >= 0 ? normalizeStringArray(r[idxSynonyms] ?? '') : [];
+      const polysemy = idxPolysemy >= 0 ? normalizeStringArray(r[idxPolysemy] ?? '') : [];
       const mnemonic = String(r[idxMnemonic] ?? '').trim();
       const example = String(r[idxExample] ?? '').trim();
       const exampleMeaning = String(r[idxExampleMeaning] ?? '').trim();
@@ -1914,7 +1989,7 @@ function parseSpreadsheetTable(text, targetDeckId) {
             .filter(Boolean)
         : [];
 
-      out.push({ prompt, meaning, mnemonic, example, exampleMeaning, tags });
+      out.push({ prompt, meaning, pronunciation, synonyms, polysemy, mnemonic, example, exampleMeaning, tags });
     }
     if (!out.length) throw new Error('추출된 키워드가 없습니다. (키워드/뜻 2열인지 확인)');
     return out;
@@ -2004,7 +2079,7 @@ function mergeVocabDuplicatesInDeck(deckId) {
   // Merge duplicates inside a vocab deck by normalized prompt.
   // - Keep the most recently updated card
   // - Combine stats (correct/wrong), keep bookmark if any
-  // - Fill empty fields (meaning/mnemonic/example/exampleMeaning) from duplicates
+  // - Fill empty fields (meaning/pronunciation/synonyms/polysemy/mnemonic/example/exampleMeaning) from duplicates
   const cards = DATA.cards.filter((c) => c.deckId === deckId);
   const byKey = new Map(); // key -> keepId
   const removeIds = new Set();
@@ -2024,6 +2099,12 @@ function mergeVocabDuplicatesInDeck(deckId) {
     // Fill fields if missing
     keep.meaning = String(keep.meaning || '').trim();
     drop.meaning = String(drop.meaning || '').trim();
+    keep.pronunciation = String(keep.pronunciation || '').trim();
+    drop.pronunciation = String(drop.pronunciation || '').trim();
+    keep.synonyms = normalizeStringArray(keep.synonyms || '');
+    drop.synonyms = normalizeStringArray(drop.synonyms || '');
+    keep.polysemy = normalizeStringArray(keep.polysemy || '');
+    drop.polysemy = normalizeStringArray(drop.polysemy || '');
     keep.mnemonic = String(keep.mnemonic || '').trim();
     drop.mnemonic = String(drop.mnemonic || '').trim();
     keep.example = String(keep.example || '').trim();
@@ -2032,6 +2113,9 @@ function mergeVocabDuplicatesInDeck(deckId) {
     drop.exampleMeaning = String(drop.exampleMeaning || '').trim();
 
     if (!keep.meaning && drop.meaning) keep.meaning = drop.meaning;
+    if (!keep.pronunciation && drop.pronunciation) keep.pronunciation = drop.pronunciation;
+    keep.synonyms = Array.from(new Set([...(keep.synonyms || []), ...(drop.synonyms || [])]));
+    keep.polysemy = Array.from(new Set([...(keep.polysemy || []), ...(drop.polysemy || [])]));
     if (!keep.mnemonic && drop.mnemonic) keep.mnemonic = drop.mnemonic;
     if (!keep.example && drop.example) keep.example = drop.example;
     if (!keep.exampleMeaning && drop.exampleMeaning) keep.exampleMeaning = drop.exampleMeaning;
@@ -3225,8 +3309,11 @@ function renderDeck(deckId) {
           const mnemonic = String(c.mnemonic || '').trim();
           const example = String(c.example || '').trim();
           const exampleMeaning = String(c.exampleMeaning || '').trim();
+          const pronunciation = String(c.pronunciation || '').trim();
+          const synonyms = normalizeStringArray(c.synonyms).join(', ');
+          const polysemy = normalizeStringArray(c.polysemy ?? c.senses ?? '').join('\n');
           const hay = isVocab
-            ? `${c.prompt}\n${meaning}\n${mnemonic}\n${example}\n${exampleMeaning}\n${(c.tags || []).join(',')}`.toLowerCase()
+            ? `${c.prompt}\n${meaning}\n${pronunciation}\n${synonyms}\n${polysemy}\n${mnemonic}\n${example}\n${exampleMeaning}\n${(c.tags || []).join(',')}`.toLowerCase()
             : `${c.prompt}\n${c.explanation || ''}\n${(c.tags || []).join(',')}`.toLowerCase();
           return hay.includes(q);
         });
@@ -3306,9 +3393,12 @@ function openCardModal({ deckId, card = null } = {}) {
 
   const c = isEdit
     ? card
-    : { prompt: '', meaning: '', mnemonic: '', example: '', exampleMeaning: '', tags: [] };
+    : { prompt: '', meaning: '', pronunciation: '', synonyms: [], polysemy: [], mnemonic: '', example: '', exampleMeaning: '', tags: [] };
 
   const meaningVal = isVocab ? String(c.meaning || c.explanation || '') : '';
+  const pronunciationVal = isVocab ? String(c.pronunciation || '') : '';
+  const synonymsVal = isVocab ? normalizeStringArray(c.synonyms).join(', ') : '';
+  const polysemyVal = isVocab ? normalizeStringArray(c.polysemy ?? c.senses ?? '').join('\n') : '';
   const mnemonicVal = isVocab ? String(c.mnemonic || '') : '';
   const exampleVal = isVocab ? String(c.example || '') : '';
   const exampleMeaningVal = isVocab ? String(c.exampleMeaning || '') : '';
@@ -3324,6 +3414,18 @@ function openCardModal({ deckId, card = null } = {}) {
         <div class="field">
           <label>뜻</label>
           <textarea id="card-meaning" placeholder="예) n. 눈사태; 쇄도">${escapeText(meaningVal)}</textarea>
+        </div>
+        <div class="field">
+          <label>발음기호</label>
+          <input type="text" id="card-pronunciation" placeholder="예) ˈævəlæntʃ" value="${escapeText(pronunciationVal)}" />
+        </div>
+        <div class="field">
+          <label>동의어 (쉼표 구분)</label>
+          <input type="text" id="card-synonyms" placeholder="예) snowslide, landslide" value="${escapeText(synonymsVal)}" />
+        </div>
+        <div class="field">
+          <label>다의어 (한 줄에 1개)</label>
+          <textarea id="card-polysemy" placeholder="예) n. 눈사태\n(비유) 쇄도">${escapeText(polysemyVal)}</textarea>
         </div>
         <div class="field">
           <label>연상</label>
@@ -3388,6 +3490,9 @@ function openCardModal({ deckId, card = null } = {}) {
 
         if (isVocab) {
           const meaning = $('#card-meaning', root).value.trim();
+          const pronunciation = $('#card-pronunciation', root).value.trim();
+          const synonyms = normalizeStringArray($('#card-synonyms', root).value);
+          const polysemy = normalizeStringArray($('#card-polysemy', root).value);
           const mnemonic = $('#card-mnemonic', root).value.trim();
           const example = $('#card-example', root).value.trim();
           const exampleMeaning = $('#card-example-meaning', root).value.trim();
@@ -3398,6 +3503,9 @@ function openCardModal({ deckId, card = null } = {}) {
             target.prompt = prompt;
             target.answer = 'O';
             target.meaning = meaning;
+            target.pronunciation = pronunciation;
+            target.synonyms = synonyms;
+            target.polysemy = polysemy;
             target.mnemonic = mnemonic;
             target.example = example;
             target.exampleMeaning = exampleMeaning;
@@ -3412,6 +3520,9 @@ function openCardModal({ deckId, card = null } = {}) {
               prompt,
               answer: 'O',
               meaning,
+              pronunciation,
+              synonyms,
+              polysemy,
               mnemonic,
               example,
               exampleMeaning,
@@ -3464,7 +3575,7 @@ function openBulkAddModal(deckId) {
         <div style="font-size: 13px; color: var(--muted); line-height: 1.5;">
           한 줄에 1개씩 붙여넣으세요.<br>
           ${isVocab
-            ? `형식: <span class="kbd">단어</span> <span class="kbd">|</span> <span class="kbd">뜻</span> <span class="kbd">|</span> <span class="kbd">연상(선택)</span> <span class="kbd">|</span> <span class="kbd">예문(선택)</span> <span class="kbd">|</span> <span class="kbd">예문 해석(선택)</span><br>`
+            ? `형식: <span class="kbd">단어</span> <span class="kbd">|</span> <span class="kbd">뜻</span> <span class="kbd">|</span> <span class="kbd">발음(선택)</span> <span class="kbd">|</span> <span class="kbd">동의어(선택)</span> <span class="kbd">|</span> <span class="kbd">다의어(선택)</span> <span class="kbd">|</span> <span class="kbd">연상(선택)</span> <span class="kbd">|</span> <span class="kbd">예문(선택)</span> <span class="kbd">|</span> <span class="kbd">예문 해석(선택)</span><br>`
             : `형식: <span class="kbd">문장</span> <span class="kbd">|</span> <span class="kbd">O/X</span> <span class="kbd">|</span> <span class="kbd">설명(선택)</span><br>`}
           탭(<span class="kbd">\t</span>) 구분도 지원합니다.
         </div>
@@ -3497,15 +3608,19 @@ function openBulkAddModal(deckId) {
           const cols = line.includes('\t') ? line.split('\t').map((x) => x.trim()) : line.split('|').map((x) => x.trim());
           if (isVocab) {
             const word = cols[0] || '';
+            const legacyCompact = cols.length <= 5;
             const meaning = cols[1] || '';
-            const mnemonic = cols[2] || '';
-            const example = cols[3] || '';
-            const exampleMeaning = cols[4] || '';
+            const pronunciation = legacyCompact ? '' : (cols[2] || '');
+            const synonyms = legacyCompact ? [] : normalizeStringArray(cols[3] || '');
+            const polysemy = legacyCompact ? [] : normalizeStringArray(cols[4] || '');
+            const mnemonic = legacyCompact ? (cols[2] || '') : (cols[5] || '');
+            const example = legacyCompact ? (cols[3] || '') : (cols[6] || '');
+            const exampleMeaning = legacyCompact ? (cols[4] || '') : (cols[7] || '');
             if (!word) {
               errors.push(`${i + 1}행: 단어가 비어있음`);
               continue;
             }
-            added.push({ prompt: word, meaning, mnemonic, example, exampleMeaning });
+            added.push({ prompt: word, meaning, pronunciation, synonyms, polysemy, mnemonic, example, exampleMeaning });
           } else {
             if (cols.length < 2) {
               errors.push(`${i + 1}행: 구분자를 확인하세요`);
@@ -3543,6 +3658,9 @@ function openBulkAddModal(deckId) {
               prompt: x.prompt,
               answer: 'O',
               meaning: x.meaning || '',
+              pronunciation: x.pronunciation || '',
+              synonyms: normalizeStringArray(x.synonyms || ''),
+              polysemy: normalizeStringArray(x.polysemy || ''),
               mnemonic: x.mnemonic || '',
               example: x.example || '',
               exampleMeaning: x.exampleMeaning || '',
@@ -3629,11 +3747,14 @@ function importObject(obj, opts = {}) {
 
     if (isVocab) {
       const meaning = String(row.meaning ?? row.explanation ?? '').trim();
+      const pronunciation = String(row.pronunciation ?? row.ipa ?? row.phonetic ?? row.pron ?? '').trim();
+      const synonyms = normalizeStringArray(row.synonyms ?? row.synonym ?? row.syns ?? row.동의어 ?? '');
+      const polysemy = normalizeStringArray(row.polysemy ?? row.senses ?? row.다의어 ?? '');
       const mnemonic = String(row.mnemonic ?? row.assoc ?? row.association ?? '').trim();
       const example = String(row.example ?? row.sentence ?? '').trim();
       const exampleMeaning = String(row.exampleMeaning ?? row.example_ko ?? row.exampleKo ?? row.example_meaning ?? '').trim();
-      const tags = Array.isArray(row.tags) ? row.tags.map((t) => String(t).trim()).filter(Boolean) : [];
-      parsed.push({ prompt, answer: 'O', meaning, mnemonic, example, exampleMeaning, explanation: meaning, tags });
+      const tags = Array.isArray(row.tags) ? row.tags.map((t) => String(t).trim()).filter(Boolean) : normalizeStringArray(row.tags ?? '');
+      parsed.push({ prompt, answer: 'O', meaning, pronunciation, synonyms, polysemy, mnemonic, example, exampleMeaning, explanation: meaning, tags });
     } else {
       const ans = normalizeAnswer(row.answer ?? row.meaning ?? row.ox ?? row.OX ?? row.correct ?? row.tf ?? row.trueFalse);
       const explanation = String(row.explanation ?? row.example ?? row.mnemonic ?? '').trim();
@@ -3689,10 +3810,13 @@ function importObject(obj, opts = {}) {
       if (!k) return;
       const existingId = existingIndex.get(k);
       const meaning = String(it.meaning ?? it.explanation ?? '').trim();
+      const pronunciation = String(it.pronunciation ?? it.ipa ?? it.phonetic ?? it.pron ?? '').trim();
+      const synonyms = normalizeStringArray(it.synonyms ?? it.synonym ?? it.syns ?? it.동의어 ?? '');
+      const polysemy = normalizeStringArray(it.polysemy ?? it.senses ?? it.다의어 ?? '');
       const mnemonic = String(it.mnemonic ?? '').trim();
       const example = String(it.example ?? '').trim();
       const exampleMeaning = String(it.exampleMeaning ?? it.example_ko ?? it.exampleKo ?? it.example_meaning ?? '').trim();
-      const tags = Array.isArray(it.tags) ? it.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+      const tags = Array.isArray(it.tags) ? it.tags.map((t) => String(t).trim()).filter(Boolean) : normalizeStringArray(it.tags ?? '');
 
       if (existingId) {
         const card = DATA.cards.find((c) => c.id === existingId);
@@ -3706,6 +3830,9 @@ function importObject(obj, opts = {}) {
             if (!card.meaning && card.explanation) card.meaning = String(card.explanation || '').trim();
             if (card.meaning && !card.explanation) card.explanation = String(card.meaning || '').trim();
           }
+          if (pronunciation) card.pronunciation = pronunciation;
+          if (synonyms.length) card.synonyms = Array.from(new Set([...(normalizeStringArray(card.synonyms)), ...synonyms]));
+          if (polysemy.length) card.polysemy = Array.from(new Set([...(normalizeStringArray(card.polysemy)), ...polysemy]));
           if (mnemonic) card.mnemonic = mnemonic;
           if (example) card.example = example;
           if (exampleMeaning) card.exampleMeaning = exampleMeaning;
@@ -3729,6 +3856,9 @@ function importObject(obj, opts = {}) {
         explanation: meaning || '',
         tags: tags || [],
         meaning: meaning || '',
+        pronunciation: pronunciation || '',
+        synonyms: synonyms || [],
+        polysemy: polysemy || [],
         mnemonic: mnemonic || '',
         example: example || '',
         exampleMeaning: exampleMeaning || '',

@@ -533,3 +533,38 @@ html[data-theme="dark"] input::placeholder,
 html[data-theme="dark"] textarea::placeholder {
   color: #75808d;
 }
+
+
+/* v22 pronunciation / synonyms / polysemy */
+.vocab-front-pron{
+  margin-top:8px;
+  font-size:15px;
+  line-height:1.5;
+  color:var(--muted);
+  font-style:italic;
+}
+.vocab-back-pron{
+  margin-top:4px;
+  font-size:15px;
+  line-height:1.5;
+  color:var(--muted);
+  font-style:italic;
+}
+.vocab-meta-label{
+  margin-top:12px;
+  margin-bottom:4px;
+  font-size:12px;
+  font-weight:800;
+  letter-spacing:.04em;
+  color:var(--muted);
+}
+.vocab-back-polysemy ol{
+  margin:6px 0 0 18px;
+  padding:0;
+}
+.vocab-back-polysemy li{
+  margin:3px 0;
+}
+.vocab-back-synonyms{
+  margin-top:8px;
+}
