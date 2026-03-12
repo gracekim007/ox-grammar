@@ -1,6 +1,6 @@
 /* OX 문법 PWA service worker */
 
-const CACHE_NAME = 'ox-grammar-cache-v13-stable-fix1';
+const CACHE_NAME = 'ox-grammar-cache-v14-rootfix';
 const ASSETS = [
   './',
   './index.html',

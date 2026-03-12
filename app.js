@@ -436,6 +436,7 @@ function parseRoute() {
 }
 
 window.addEventListener('hashchange', safeRenderRoute);
+window.addEventListener('pageshow', safeRenderRoute);
 
 // -------------------------
 // Views
@@ -2625,13 +2626,23 @@ function renderAbout() {
 function renderRoute() {
   closeDrawer();
 
-  const { parts, query } = parseRoute();
-
-  // If no hash, set default
+  // iOS/Safari에서 초기 진입 시 hashchange가 안 잡히는 경우가 있어서
+  // 해시가 없어도 바로 홈을 렌더링하고, 주소만 조용히 #/ 로 맞춰준다.
   if (!location.hash || location.hash === '#') {
-    location.hash = '#/';
+    try {
+      if (history && history.replaceState) {
+        history.replaceState(null, '', '#/');
+      } else {
+        location.hash = '#/';
+      }
+    } catch (e) {
+      location.hash = '#/';
+    }
+    renderHome();
     return;
   }
+
+  const { parts, query } = parseRoute();
 
   // Home
   if (parts.length === 0) {
