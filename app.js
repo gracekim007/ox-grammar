@@ -3481,6 +3481,1052 @@ ${(c.tags || []).join(',')}`.toLowerCase()
   renderList();
 }
 
-// Initial render
+// =========================
+// v12 patch: DAY 학습 선택 + 30개/day 자동 이어붙이기 + 명시적 전체학습
+// =========================
+
+function buildStudyHashExact(deckId, mode = 'all', selectedTags = [], tagMatch = 'any') {
+  const params = new URLSearchParams();
+  params.set('mode', normalizeStudyMode(mode || 'all'));
+  params.set('tags', Array.isArray(selectedTags) ? selectedTags.join(',') : '');
+  params.set('tagMatch', String(tagMatch || '').toLowerCase() === 'all' ? 'all' : 'any');
+  return `#/study/${deckId}?${params.toString()}`;
+}
+
+function getCardDayTag(card) {
+  const tags = Array.isArray(card?.tags) ? card.tags : [];
+  let best = null;
+  tags.forEach((tag) => {
+    const n = dayTagNum(tag);
+    if (n && (!best || n < best.num)) best = { tag: formatDayTag(n), num: n };
+  });
+  return best;
+}
+
+function appendMissingDayTags(deckId, dailyCount = DEFAULT_DAILY_NEW_COUNT) {
+  const deck = getDeck(deckId);
+  if (!deck || String(deck.type || '').toLowerCase() !== 'vocab') return 0;
+  ensureDeckPlanDefaults(deck);
+  deck.dailyCount = Number(deck.dailyCount) || dailyCount || DEFAULT_DAILY_NEW_COUNT;
+
+  const cards = getCards(deckId).slice().sort((a, b) => {
+    const ca = Number(a.createdAt || 0);
+    const cb = Number(b.createdAt || 0);
+    if (ca !== cb) return ca - cb;
+    return String(a.prompt || '').localeCompare(String(b.prompt || ''), 'ko');
+  });
+
+  const counts = new Map();
+  let maxDay = 0;
+  const unassigned = [];
+
+  cards.forEach((card) => {
+    const info = getCardDayTag(card);
+    if (!info) {
+      unassigned.push(card);
+      return;
+    }
+    const prev = counts.get(info.num) || 0;
+    counts.set(info.num, prev + 1);
+    if (info.num > maxDay) maxDay = info.num;
+  });
+
+  if (unassigned.length === 0) return maxDay;
+
+  let dayNo = maxDay || 1;
+  let dayCount = counts.get(dayNo) || 0;
+
+  unassigned.forEach((card) => {
+    if (dayCount >= deck.dailyCount) {
+      dayNo += 1;
+      dayCount = counts.get(dayNo) || 0;
+    }
+    card.tags = [...stripDayTags(card.tags), formatDayTag(dayNo)];
+    card.updatedAt = now();
+    dayCount += 1;
+    counts.set(dayNo, dayCount);
+    if (dayNo > maxDay) maxDay = dayNo;
+  });
+
+  if (!deck.planStartDate) deck.planStartDate = '';
+  commit();
+  return maxDay;
+}
+
+function getDeckDayRows(deckId) {
+  const deck = getDeck(deckId);
+  if (!deck || String(deck.type || '').toLowerCase() !== 'vocab') return [];
+  appendMissingDayTags(deckId, Number(deck.dailyCount) || DEFAULT_DAILY_NEW_COUNT);
+
+  const map = new Map();
+  getCards(deckId).forEach((card) => {
+    const info = getCardDayTag(card);
+    if (!info) return;
+    let row = map.get(info.num);
+    if (!row) {
+      row = { num: info.num, tag: info.tag, total: 0, wrong: 0, bookmarked: 0 };
+      map.set(info.num, row);
+    }
+    row.total += 1;
+    if (isWrongCard(card.id)) row.wrong += 1;
+    if (isBookmarked(card.id)) row.bookmarked += 1;
+  });
+  return Array.from(map.values()).sort((a, b) => a.num - b.num);
+}
+
+function getDeckPlanMeta(deckId) {
+  const deck = getDeck(deckId);
+  if (!deck || String(deck.type || '').toLowerCase() !== 'vocab') return null;
+  const rows = getDeckDayRows(deckId);
+  if (!rows.length) return `30개/day · DAY 없음`;
+  return `30개/day · DAY ${rows.length}개`;
+}
+
+function openDayStudyModal(deckId) {
+  const deck = getDeck(deckId);
+  if (!deck) return;
+  const rows = getDeckDayRows(deckId);
+  if (!rows.length) {
+    toast('DAY로 나눌 단어가 없습니다');
+    return;
+  }
+
+  openModal({
+    title: 'DAY 학습',
+    bodyHTML: `
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-weight:800; margin-bottom:6px;">${escapeText(deck.name)}</div>
+        <div style="font-size:13px; color: var(--muted); line-height:1.6;">
+          단어장은 <b>30개/day</b> 기준으로 자동 분할됩니다.<br>
+          원하는 DAY를 골라서 그 안의 단어만 학습하세요.
+        </div>
+      </div>
+      <div id="day-list" style="display:flex; flex-direction:column; gap:10px;"></div>
+      <div class="row" style="justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:12px;">
+        <div style="font-size:12px; color:var(--muted);">새 단어를 추가하면 마지막 DAY 뒤로 이어서 자동 배정됩니다.</div>
+        <button class="btn small" id="btn-day-rebuild">DAY 다시 정리</button>
+      </div>
+    `,
+    onMount: (root) => {
+      const listEl = $('#day-list', root);
+      rows.forEach((row) => {
+        const item = document.createElement('div');
+        item.className = 'card';
+        item.style.margin = '0';
+        item.innerHTML = `
+          <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap;">
+            <div>
+              <div style="font-weight:800; font-size:15px;">${escapeText(row.tag)}</div>
+              <div style="font-size:13px; color:var(--muted); margin-top:4px;">
+                단어 ${row.total}개 · 모름 ${row.wrong}개 · 북마크 ${row.bookmarked}개
+              </div>
+            </div>
+            <div class="row" style="gap:8px; flex-wrap:wrap;">
+              <button class="btn primary small" data-study-day="${escapeText(row.tag)}">학습</button>
+            </div>
+          </div>
+        `;
+        $('[data-study-day]', item).addEventListener('click', () => {
+          closeModal();
+          location.hash = buildStudyHashExact(deckId, 'all', [row.tag], 'any');
+        });
+        listEl.appendChild(item);
+      });
+
+      $('#btn-day-rebuild', root).addEventListener('click', () => {
+        const ok = confirm('현재 단어장을 30개/day 기준으로 처음부터 다시 나눌까요? 기존 DAY 태그는 덮어써집니다.');
+        if (!ok) return;
+        assignDeckDayTags(deckId, DEFAULT_DAILY_NEW_COUNT, false);
+        closeModal();
+        toast('DAY를 30개/day 기준으로 다시 나눴어요');
+        renderRoute();
+      });
+    },
+  });
+}
+
+function startStudyByExactFilter(deckId, mode = 'all', tags = [], tagMatch = 'any') {
+  location.hash = buildStudyHashExact(deckId, mode, tags, tagMatch);
+}
+
+function preserveOrStartStudy(deckId, mode = 'all', tags = [], tagMatch = 'any') {
+  const cleanTags = uniqueSorted((tags || []).map((t) => String(t).trim()).filter(Boolean));
+  const modeNorm = normalizeStudyMode(mode);
+  const currentTags = STUDY?.tagFilter?.tags ? uniqueSorted(STUDY.tagFilter.tags) : [];
+  const currentMatch = STUDY?.tagFilter?.match || 'any';
+  const sameDeck = STUDY && STUDY.deckId === deckId;
+  const sameMode = STUDY && normalizeStudyMode(STUDY.mode) === modeNorm;
+  const sameTags = JSON.stringify(currentTags) === JSON.stringify(cleanTags);
+  const sameMatch = currentMatch === (String(tagMatch || '').toLowerCase() === 'all' ? 'all' : 'any');
+
+  // Explicit full study should clear old tag filters.
+  if (sameDeck && sameMode && sameTags && sameMatch) {
+    location.hash = buildStudyHashExact(deckId, modeNorm, cleanTags, tagMatch);
+    return;
+  }
+  location.hash = buildStudyHashExact(deckId, modeNorm, cleanTags, tagMatch);
+}
+
+function renderHome() {
+  setSubtitle('카테고리 목록');
+
+  const decks = DATA.decks.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const resume = getResumeStudyMeta();
+
+  appEl.innerHTML = `
+    <div class="row" style="justify-content: space-between; gap: 10px;">
+      <button class="btn primary" id="btn-new-deck">+ 카테고리</button>
+      <button class="btn" id="btn-go-import">가져오기</button>
+    </div>
+
+    ${resume ? `
+      <div class="card" style="margin-top: 12px;">
+        <div style="font-weight: 800; margin-bottom: 6px;">이어서 학습</div>
+        <div style="font-size: 13px; color: var(--muted); line-height: 1.6;">
+          <b>${escapeText(resume.deck.name)}</b> · ${escapeText(resume.modeLabel)} · ${resume.current}/${resume.total}<br>
+          ${resume.prompt ? escapeText(resume.prompt.length > 70 ? resume.prompt.slice(0, 70) + '…' : resume.prompt) : ''}
+        </div>
+        <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+          <button class="btn primary small" id="btn-resume-study">이어서 학습</button>
+          <button class="btn small" id="btn-clear-resume">이어하기 삭제</button>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="section-title">카테고리</div>
+    <div class="deck-grid" id="deck-grid"></div>
+
+    <div class="hr"></div>
+    <div class="card">
+      <div style="font-weight: 750; margin-bottom: 8px;">빠른 시작</div>
+      <div style="font-size: 13px; color: var(--muted); line-height: 1.6;">
+        · <b>문법 OX</b>: 문장을 보고 <span class="kbd">O</span>/<span class="kbd">X</span> 선택 → 정답/해설 확인 → <span class="kbd">다음</span>.<br>
+        · <b>단어장</b>: 단어를 보고 <span class="kbd">O</span>(앎)/<span class="kbd">X</span>(모름) 선택 → 뜻/연상/예문/해석 확인 → <span class="kbd">다음</span>.<br>
+        · <b>DAY 학습</b>: 단어장은 <b>30개/day</b>로 자동 분할되고, 원하는 DAY를 직접 골라서 학습합니다.<br>
+        · 앱을 나갔다 와도 <b>이어서 학습</b>으로 계속 볼 수 있어요.
+      </div>
+    </div>
+  `;
+
+  $('#btn-new-deck').addEventListener('click', () => openDeckModal());
+  $('#btn-go-import').addEventListener('click', () => (location.hash = '#/import'));
+
+  if (resume) {
+    $('#btn-resume-study').addEventListener('click', () => {
+      location.hash = buildStudyHashExact(
+        resume.deck.id,
+        STUDY.mode || 'all',
+        STUDY.tagFilter?.tags || [],
+        STUDY.tagFilter?.match || 'any'
+      );
+    });
+    $('#btn-clear-resume').addEventListener('click', () => {
+      STUDY = null;
+      clearStudyState();
+      toast('이어하기가 삭제되었어요');
+      renderHome();
+    });
+  }
+
+  const grid = $('#deck-grid');
+  if (decks.length === 0) {
+    grid.innerHTML = `<div class="card">아직 카테고리가 없습니다. <b>+ 카테고리</b>로 시작하세요.</div>`;
+    return;
+  }
+
+  decks.forEach((deck) => {
+    const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+    const s = deckStats(deck.id);
+    const bmCount = deckBookmarkCount(deck.id);
+    const wrongCount = deckWrongCount(deck.id);
+    const tagCount = getDeckTags(deck.id, 'all').length;
+    const labelCards = isVocab ? '단어' : '문제';
+    const labelWrong = isVocab ? '모름' : '오답';
+    const labelAcc = isVocab ? '알았음률' : '정답률';
+    const dayMeta = isVocab ? getDeckPlanMeta(deck.id) : null;
+
+    const meta = [
+      `${labelCards} ${s.cardsCount}개`,
+      bmCount ? `북마크 ${bmCount}개` : null,
+      wrongCount ? `${labelWrong} ${wrongCount}개` : null,
+      s.acc == null ? '기록 없음' : `${labelAcc} ${s.acc}% (기록 ${s.total}회)`,
+      dayMeta,
+    ].filter(Boolean).join(' · ');
+
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div class="deck-title">${escapeText(deck.name)}</div>
+      <div class="deck-meta">${escapeText(meta)}</div>
+      <div class="deck-actions">
+        ${isVocab
+          ? `
+            <button class="btn primary small" data-action="study-all">전체 학습</button>
+            <button class="btn small" data-action="study-day">DAY 학습</button>
+          `
+          : `<button class="btn primary small" data-action="study-all">학습</button>`}
+        <button class="btn small" data-action="bm" ${bmCount ? '' : 'disabled'}>북마크</button>
+        <button class="btn small" data-action="wrong" ${wrongCount ? '' : 'disabled'}>${escapeText(labelWrong)}</button>
+        <button class="btn small" data-action="tags" ${tagCount ? '' : 'disabled'}>태그</button>
+        <button class="btn small" data-action="manage">관리</button>
+      </div>
+    `;
+
+    el.querySelector('[data-action="study-all"]').addEventListener('click', () => {
+      preserveOrStartStudy(deck.id, 'all', [], 'any');
+    });
+
+    if (isVocab) {
+      el.querySelector('[data-action="study-day"]').addEventListener('click', () => {
+        openDayStudyModal(deck.id);
+      });
+    }
+
+    el.querySelector('[data-action="bm"]').addEventListener('click', () => {
+      if (!bmCount) return;
+      preserveOrStartStudy(deck.id, 'bookmarks', [], 'any');
+    });
+
+    el.querySelector('[data-action="wrong"]').addEventListener('click', () => {
+      if (!wrongCount) return;
+      preserveOrStartStudy(deck.id, 'wrongs', [], 'any');
+    });
+
+    el.querySelector('[data-action="manage"]').addEventListener('click', () => {
+      location.hash = `#/deck/${deck.id}`;
+    });
+
+    el.querySelector('[data-action="tags"]').addEventListener('click', () => {
+      if (!tagCount) {
+        toast('태그가 없습니다');
+        return;
+      }
+      openTagStudyModal(deck.id, { mode: 'all', tags: [], tagMatch: 'any' });
+    });
+
+    grid.appendChild(el);
+  });
+}
+
+function renderDeck(deckId) {
+  const deck = getDeck(deckId);
+  if (!deck) {
+    appEl.innerHTML = `<div class="card">존재하지 않는 카테고리입니다.</div>`;
+    setSubtitle('');
+    return;
+  }
+
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+  const labelCards = isVocab ? '단어' : '문제';
+  const labelCorrect = isVocab ? '알았음' : '맞춤';
+  const labelWrong = isVocab ? '모름' : '틀림';
+  const labelWrongOnly = isVocab ? '모름' : '오답';
+
+  const cards = getCards(deckId);
+  const s = deckStats(deckId);
+  const bmCount = deckBookmarkCount(deckId);
+  const wrongCount = deckWrongCount(deckId);
+  const tagCount = getDeckTags(deckId, 'all').length;
+  const dayRows = isVocab ? getDeckDayRows(deckId) : [];
+
+  setSubtitle(`${deck.name} · ${labelCards} ${s.cardsCount}개`);
+
+  const vocabPlanCard = isVocab ? `
+    <div class="card" style="margin-bottom: 12px;">
+      <div style="font-weight:800; font-size:15px;">DAY 분할</div>
+      <div style="color: var(--muted); font-size: 13px; line-height:1.6; margin-top:8px;">
+        30개/day 기준 · 총 <b>${dayRows.length}</b>개 DAY
+        <br>새 단어를 추가하면 마지막 DAY 뒤에 이어서 자동 배정됩니다.
+      </div>
+      <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <button class="btn primary small" id="btn-day-study-top">DAY 학습</button>
+        <button class="btn small" id="btn-rebuild-day-top">DAY 다시 정리</button>
+      </div>
+    </div>
+  ` : '';
+
+  appEl.innerHTML = `
+    <div class="card" style="margin-bottom: 12px;">
+      <div style="display:flex; justify-content: space-between; gap: 10px;">
+        <div>
+          <div style="font-weight: 800; font-size: 16px;">${escapeText(deck.name)}</div>
+          <div style="color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.4;">${escapeText(deck.description || '')}</div>
+          <div style="margin-top: 10px; font-size: 12px; color: var(--muted);">
+            기록: ${labelCorrect} ${s.correct} · ${labelWrong} ${s.wrong} · ${labelWrongOnly} ${wrongCount} · 북마크 ${bmCount}
+          </div>
+        </div>
+        <div style="display:flex; flex-direction: column; gap: 8px; min-width: 150px;">
+          ${isVocab ? `<button class="btn primary small" id="btn-study-all">전체 학습</button>` : `<button class="btn primary small" id="btn-study-all">학습</button>`}
+          ${isVocab ? `<button class="btn small" id="btn-day-study">DAY 학습</button>` : ''}
+          <button class="btn small" id="btn-study-bookmarks" ${bmCount ? '' : 'disabled'}>북마크 학습 (${bmCount})</button>
+          <button class="btn small" id="btn-study-wrongs" ${wrongCount ? '' : 'disabled'}>${labelWrongOnly} 학습 (${wrongCount})</button>
+          <button class="btn small" id="btn-study-tags" ${tagCount ? '' : 'disabled'}>태그 학습 (${tagCount})</button>
+          <button class="btn small" id="btn-edit-deck">카테고리 수정</button>
+          <button class="btn danger small" id="btn-delete-deck">카테고리 삭제</button>
+        </div>
+      </div>
+    </div>
+
+    ${vocabPlanCard}
+
+    <div class="row" style="justify-content: space-between; gap: 10px;">
+      <button class="btn primary" id="btn-add-card">+ ${labelCards} 추가</button>
+      <button class="btn" id="btn-bulk-add">여러 개 붙여넣기</button>
+    </div>
+
+    <div class="field" style="margin-top: 12px;">
+      <label>검색</label>
+      <input type="text" id="search" placeholder="${isVocab ? '단어/뜻/연상/예문/해석/태그 검색' : '문장/설명/태그 검색'}" />
+    </div>
+
+    <div class="section-title">${labelCards} 목록</div>
+    <div class="list" id="card-list"></div>
+  `;
+
+  $('#btn-study-all').addEventListener('click', () => preserveOrStartStudy(deckId, 'all', [], 'any'));
+  if (isVocab) {
+    $('#btn-day-study').addEventListener('click', () => openDayStudyModal(deckId));
+    const topDayBtn = $('#btn-day-study-top');
+    if (topDayBtn) topDayBtn.addEventListener('click', () => openDayStudyModal(deckId));
+    const rebuildDayBtn = $('#btn-rebuild-day-top');
+    if (rebuildDayBtn) rebuildDayBtn.addEventListener('click', () => {
+      const ok = confirm('현재 단어장을 30개/day 기준으로 처음부터 다시 나눌까요? 기존 DAY 태그는 덮어써집니다.');
+      if (!ok) return;
+      assignDeckDayTags(deckId, DEFAULT_DAILY_NEW_COUNT, false);
+      toast('DAY를 30개/day 기준으로 다시 나눴어요');
+      renderRoute();
+    });
+  }
+
+  $('#btn-study-bookmarks').addEventListener('click', () => {
+    if (!bmCount) {
+      toast('북마크된 카드가 없습니다');
+      return;
+    }
+    preserveOrStartStudy(deckId, 'bookmarks', [], 'any');
+  });
+
+  $('#btn-study-wrongs').addEventListener('click', () => {
+    if (!wrongCount) {
+      toast(isVocab ? '모르는 카드가 없습니다' : '틀린 문제가 없습니다');
+      return;
+    }
+    preserveOrStartStudy(deckId, 'wrongs', [], 'any');
+  });
+
+  $('#btn-study-tags').addEventListener('click', () => {
+    if (!tagCount) {
+      toast('태그가 없습니다');
+      return;
+    }
+    openTagStudyModal(deckId, { mode: 'all', tags: [], tagMatch: 'any' });
+  });
+
+  $('#btn-edit-deck').addEventListener('click', () => openDeckModal(deck));
+
+  $('#btn-delete-deck').addEventListener('click', () => {
+    if (cards.length > 0) {
+      const ok = confirm('이 카테고리의 카드도 함께 삭제됩니다. 계속할까요?');
+      if (!ok) return;
+    } else {
+      const ok = confirm('카테고리를 삭제할까요?');
+      if (!ok) return;
+    }
+    DATA.decks = DATA.decks.filter((d) => d.id !== deckId);
+    DATA.cards = DATA.cards.filter((c) => c.deckId !== deckId);
+    if (STUDY && STUDY.deckId === deckId) {
+      STUDY = null;
+      clearStudyState();
+    }
+    commit();
+    toast('삭제됨');
+    location.hash = '#/';
+  });
+
+  $('#btn-add-card').addEventListener('click', () => openCardModal({ deckId }));
+  $('#btn-bulk-add').addEventListener('click', () => openBulkAddModal(deckId));
+
+  const listEl = $('#card-list');
+  const searchEl = $('#search');
+
+  function renderList() {
+    const q = searchEl.value.trim().toLowerCase();
+    const filtered = !q
+      ? cards
+      : cards.filter((c) => {
+          const meaning = String(c.meaning || c.explanation || '').trim();
+          const mnemonic = String(c.mnemonic || '').trim();
+          const example = String(c.example || '').trim();
+          const exampleMeaning = String(c.exampleMeaning || '').trim();
+          const hay = isVocab
+            ? `${c.prompt}\n${meaning}\n${mnemonic}\n${example}\n${exampleMeaning}\n${(c.tags || []).join(',')}`.toLowerCase()
+            : `${c.prompt}\n${c.explanation || ''}\n${(c.tags || []).join(',')}`.toLowerCase();
+          return hay.includes(q);
+        });
+
+    if (filtered.length === 0) {
+      listEl.innerHTML = `<div class="card">표시할 카드가 없습니다.</div>`;
+      return;
+    }
+
+    listEl.innerHTML = '';
+    filtered
+      .slice()
+      .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
+      .forEach((c) => {
+        const st = DATA.stats[c.id] || { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+        const bm = isBookmarked(c.id);
+        const total = (st.correct || 0) + (st.wrong || 0);
+        const acc = total === 0 ? '' : ` · ${isVocab ? '알았음률' : '정답률'} ${Math.round(((st.correct || 0) / total) * 100)}%`;
+        const tags = (c.tags || []).slice(0, 6).join(', ');
+        const meaning = String(c.meaning || c.explanation || '').trim();
+        const meaningPreview = isVocab && meaning
+          ? ` · 뜻 ${escapeText(meaning.length > 44 ? meaning.slice(0, 44) + '…' : meaning)}`
+          : '';
+        const dayInfo = isVocab ? getCardDayTag(c) : null;
+        const dayPreview = dayInfo ? ` · ${escapeText(dayInfo.tag)}` : '';
+
+        const sub = isVocab
+          ? `기록 ${total}회 · 알았음 ${(st.correct || 0)} · 모름 ${(st.wrong || 0)}${acc}${dayPreview}${tags ? ` · 태그 ${escapeText(tags)}` : ''}${meaningPreview}`
+          : `정답 ${escapeText(c.answer)} · 기록 ${total}회${acc}${tags ? ` · 태그 ${escapeText(tags)}` : ''}`;
+
+        const row = document.createElement('div');
+        row.className = 'item';
+        row.innerHTML = `
+          <div>
+            <div class="item-title">${escapeText(c.prompt)}</div>
+            <div class="item-sub">${sub}</div>
+          </div>
+          <div class="item-actions">
+            <button class="btn small" data-bm title="북마크">${bm ? '★' : '☆'}</button>
+            <button class="btn small" data-edit>수정</button>
+            <button class="btn danger small" data-del>삭제</button>
+          </div>
+        `;
+
+        $('[data-bm]', row).addEventListener('click', () => {
+          const next = toggleBookmark(c.id);
+          toast(next ? '북마크됨' : '북마크 해제');
+          renderList();
+        });
+        $('[data-edit]', row).addEventListener('click', () => openCardModal({ deckId, card: c }));
+        $('[data-del]', row).addEventListener('click', () => {
+          const ok = confirm('이 카드를 삭제할까요?');
+          if (!ok) return;
+          DATA.cards = DATA.cards.filter((x) => x.id !== c.id);
+          delete DATA.stats[c.id];
+          if (STUDY && STUDY.deckId === deckId) saveStudyState();
+          commit();
+          toast('삭제됨');
+          const idx = cards.findIndex((x) => x.id === c.id);
+          if (idx >= 0) cards.splice(idx, 1);
+          renderList();
+        });
+
+        listEl.appendChild(row);
+      });
+  }
+
+  searchEl.addEventListener('input', renderList);
+  renderList();
+}
+
+function openCardModal({ deckId, card = null } = {}) {
+  const deck = getDeck(deckId);
+  if (!deck) return;
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+  const isEdit = !!card;
+
+  const c = isEdit
+    ? card
+    : { prompt: '', meaning: '', mnemonic: '', example: '', exampleMeaning: '', tags: [] };
+
+  const meaningVal = isVocab ? String(c.meaning || c.explanation || '') : '';
+  const mnemonicVal = isVocab ? String(c.mnemonic || '') : '';
+  const exampleVal = isVocab ? String(c.example || '') : '';
+  const exampleMeaningVal = isVocab ? String(c.exampleMeaning || '') : '';
+
+  openModal({
+    title: isEdit ? `${isVocab ? '단어' : '문제'} 수정` : `${isVocab ? '단어' : '문제'} 추가`,
+    bodyHTML: isVocab
+      ? `
+        <div class="field">
+          <label>단어</label>
+          <input type="text" id="card-prompt" placeholder="예) avalanche" value="${escapeText(c.prompt || '')}" />
+        </div>
+        <div class="field">
+          <label>뜻</label>
+          <textarea id="card-meaning" placeholder="예) n. 눈사태; 쇄도">${escapeText(meaningVal)}</textarea>
+        </div>
+        <div class="field">
+          <label>연상</label>
+          <textarea id="card-mnemonic" placeholder="예) 아~ 발 안 차! 눈사태처럼 몰려온다">${escapeText(mnemonicVal)}</textarea>
+        </div>
+        <div class="field">
+          <label>예문</label>
+          <textarea id="card-example" placeholder="예) An avalanche of complaints followed.">${escapeText(exampleVal)}</textarea>
+        </div>
+        <div class="field">
+          <label>예문 해석</label>
+          <textarea id="card-example-meaning" placeholder="예) 항의가 눈사태처럼 쏟아졌다.">${escapeText(exampleMeaningVal)}</textarea>
+        </div>
+        <div class="field">
+          <label>태그 (쉼표 구분)</label>
+          <input type="text" id="card-tags" placeholder="예) 경선식, DAY01" value="${escapeText((c.tags || []).join(', '))}" />
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="card-cancel">취소</button>
+          <button class="btn primary" id="card-save">저장</button>
+        </div>
+      `
+      : `
+        <div class="field">
+          <label>문장</label>
+          <textarea id="card-prompt" placeholder="예) The man whom I met yesterday is my teacher.">${escapeText(c.prompt || '')}</textarea>
+        </div>
+        <div class="field">
+          <label>정답</label>
+          <select id="card-answer">
+            <option value="O" ${normalizeAnswer(c.answer) === 'O' ? 'selected' : ''}>O</option>
+            <option value="X" ${normalizeAnswer(c.answer) === 'X' ? 'selected' : ''}>X</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>해설</label>
+          <textarea id="card-expl" placeholder="예) I met him → 목적어이므로 whom 가능">${escapeText(c.explanation || '')}</textarea>
+        </div>
+        <div class="field">
+          <label>태그 (쉼표 구분)</label>
+          <input type="text" id="card-tags" placeholder="예) 관계사, who/whom" value="${escapeText((c.tags || []).join(', '))}" />
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="card-cancel">취소</button>
+          <button class="btn primary" id="card-save">저장</button>
+        </div>
+      `,
+    onMount: (root) => {
+      $('#card-cancel', root).addEventListener('click', closeModal);
+      $('#card-save', root).addEventListener('click', () => {
+        const prompt = $('#card-prompt', root).value.trim();
+        if (!prompt) {
+          alert(isVocab ? '단어를 입력해 주세요.' : '문장을 입력해 주세요.');
+          return;
+        }
+
+        const tags = $('#card-tags', root)
+          .value
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean);
+
+        if (isVocab) {
+          const meaning = $('#card-meaning', root).value.trim();
+          const mnemonic = $('#card-mnemonic', root).value.trim();
+          const example = $('#card-example', root).value.trim();
+          const exampleMeaning = $('#card-example-meaning', root).value.trim();
+
+          if (isEdit) {
+            const target = DATA.cards.find((x) => x.id === c.id);
+            if (!target) return;
+            target.prompt = prompt;
+            target.answer = 'O';
+            target.meaning = meaning;
+            target.mnemonic = mnemonic;
+            target.example = example;
+            target.exampleMeaning = exampleMeaning;
+            target.explanation = meaning;
+            target.tags = tags;
+            target.updatedAt = now();
+          } else {
+            const id = uuid();
+            DATA.cards.push({
+              id,
+              deckId,
+              prompt,
+              answer: 'O',
+              meaning,
+              mnemonic,
+              example,
+              exampleMeaning,
+              explanation: meaning,
+              tags,
+              createdAt: now(),
+              updatedAt: now(),
+            });
+            DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+          }
+
+          appendMissingDayTags(deckId, DEFAULT_DAILY_NEW_COUNT);
+        } else {
+          const answer = normalizeAnswer($('#card-answer', root).value) || 'O';
+          const explanation = $('#card-expl', root).value.trim();
+
+          if (isEdit) {
+            const target = DATA.cards.find((x) => x.id === c.id);
+            if (!target) return;
+            target.prompt = prompt;
+            target.answer = answer;
+            target.explanation = explanation;
+            target.tags = tags;
+            target.updatedAt = now();
+          } else {
+            const id = uuid();
+            DATA.cards.push({ id, deckId, prompt, answer, explanation, tags, createdAt: now(), updatedAt: now() });
+            DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+          }
+        }
+
+        commit();
+        closeModal();
+        toast('저장됨');
+        renderRoute();
+      });
+    },
+  });
+}
+
+function openBulkAddModal(deckId) {
+  const deck = getDeck(deckId);
+  if (!deck) return;
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+
+  openModal({
+    title: isVocab ? '여러 단어 붙여넣기' : '여러 개 붙여넣기',
+    bodyHTML: `
+      <div class="card" style="margin-bottom: 12px;">
+        <div style="font-size: 13px; color: var(--muted); line-height: 1.5;">
+          한 줄에 1개씩 붙여넣으세요.<br>
+          ${isVocab
+            ? `형식: <span class="kbd">단어</span> <span class="kbd">|</span> <span class="kbd">뜻</span> <span class="kbd">|</span> <span class="kbd">연상(선택)</span> <span class="kbd">|</span> <span class="kbd">예문(선택)</span> <span class="kbd">|</span> <span class="kbd">예문 해석(선택)</span><br>`
+            : `형식: <span class="kbd">문장</span> <span class="kbd">|</span> <span class="kbd">O/X</span> <span class="kbd">|</span> <span class="kbd">설명(선택)</span><br>`}
+          탭(<span class="kbd">\t</span>) 구분도 지원합니다.
+        </div>
+      </div>
+      <div class="field">
+        <label>붙여넣기</label>
+        <textarea id="bulk" placeholder="${isVocab
+          ? `avalanche | n. 눈사태; 산사태; 쇄도 | 아~ 발 안 차! 눈사태처럼 몰려온다 | An avalanche of emails arrived. | 이메일이 눈사태처럼 쏟아졌다.`
+          : `think it better to tell the truth | O | think + it + adj + toV`} "></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="bulk-cancel">취소</button>
+        <button class="btn primary" id="bulk-add">추가</button>
+      </div>
+    `,
+    onMount: (root) => {
+      $('#bulk-cancel', root).addEventListener('click', closeModal);
+      $('#bulk-add', root).addEventListener('click', () => {
+        const text = $('#bulk', root).value;
+        const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        if (lines.length === 0) {
+          alert('붙여넣을 내용이 없습니다.');
+          return;
+        }
+
+        const added = [];
+        const errors = [];
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const cols = line.includes('\t') ? line.split('\t').map((x) => x.trim()) : line.split('|').map((x) => x.trim());
+          if (isVocab) {
+            const word = cols[0] || '';
+            const meaning = cols[1] || '';
+            const mnemonic = cols[2] || '';
+            const example = cols[3] || '';
+            const exampleMeaning = cols[4] || '';
+            if (!word) {
+              errors.push(`${i + 1}행: 단어가 비어있음`);
+              continue;
+            }
+            added.push({ prompt: word, meaning, mnemonic, example, exampleMeaning });
+          } else {
+            if (cols.length < 2) {
+              errors.push(`${i + 1}행: 구분자를 확인하세요`);
+              continue;
+            }
+            const prompt = cols[0];
+            const ans = normalizeAnswer(cols[1]);
+            const explanation = cols.slice(2).join(' | ').trim();
+            if (!prompt) {
+              errors.push(`${i + 1}행: 문장이 비어있음`);
+              continue;
+            }
+            if (!ans) {
+              errors.push(`${i + 1}행: O/X 판별 불가`);
+              continue;
+            }
+            added.push({ prompt, answer: ans, explanation });
+          }
+        }
+
+        if (added.length === 0) {
+          alert('추가할 수 있는 줄이 없습니다.\n' + errors.slice(0, 5).join('\n'));
+          return;
+        }
+
+        const ok = confirm(`총 ${added.length}개를 추가할까요?` + (errors.length ? `\n(오류 ${errors.length}개는 건너뜀)` : ''));
+        if (!ok) return;
+
+        added.forEach((x) => {
+          const id = uuid();
+          if (isVocab) {
+            DATA.cards.push({
+              id,
+              deckId,
+              prompt: x.prompt,
+              answer: 'O',
+              meaning: x.meaning || '',
+              mnemonic: x.mnemonic || '',
+              example: x.example || '',
+              exampleMeaning: x.exampleMeaning || '',
+              explanation: x.meaning || '',
+              tags: [],
+              createdAt: now(),
+              updatedAt: now(),
+            });
+          } else {
+            DATA.cards.push({
+              id,
+              deckId,
+              prompt: x.prompt,
+              answer: x.answer,
+              explanation: x.explanation,
+              tags: [],
+              createdAt: now(),
+              updatedAt: now(),
+            });
+          }
+          DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+        });
+
+        if (isVocab) appendMissingDayTags(deckId, DEFAULT_DAILY_NEW_COUNT);
+        commit();
+        closeModal();
+        toast(`추가됨: ${added.length}개`);
+        renderRoute();
+      });
+    },
+  });
+}
+
+function importObject(obj, opts = {}) {
+  const { targetDeckId, vocabDedupe = true } = opts;
+
+  if (obj && typeof obj === 'object' && !Array.isArray(obj) && Array.isArray(obj.decks) && Array.isArray(obj.cards)) {
+    const ok = confirm('전체 데이터를 덮어쓸까요? (현재 데이터는 사라짐)');
+    if (!ok) return;
+    DATA = normalizeData(obj);
+    DATA.decks.forEach((deck) => {
+      if (String(deck.type || '').toLowerCase() === 'vocab') appendMissingDayTags(deck.id, Number(deck.dailyCount) || DEFAULT_DAILY_NEW_COUNT);
+    });
+    STUDY = null;
+    clearStudyState();
+    commit();
+    toast('가져오기 완료');
+    location.hash = '#/';
+    renderRoute();
+    return;
+  }
+
+  if (!Array.isArray(obj)) {
+    alert('지원하지 않는 JSON 형식입니다.\n전체 백업 또는 카드 배열(JSON)을 넣어주세요.');
+    return;
+  }
+
+  if (!targetDeckId) {
+    alert('대상 카테고리를 선택해 주세요.');
+    return;
+  }
+  const deck = getDeck(targetDeckId);
+  if (!deck) {
+    alert('대상 카테고리를 찾을 수 없습니다.');
+    return;
+  }
+
+  const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
+  const parsed = [];
+  const errors = [];
+
+  for (let i = 0; i < obj.length; i++) {
+    const row = obj[i];
+    if (!row || typeof row !== 'object') {
+      errors.push(`${i + 1}번째: 객체가 아님`);
+      continue;
+    }
+
+    const prompt = String(row.prompt ?? row.word ?? '').trim();
+    if (!prompt) {
+      errors.push(`${i + 1}번째: prompt(word) 비어있음`);
+      continue;
+    }
+
+    if (isVocab) {
+      const meaning = String(row.meaning ?? row.explanation ?? '').trim();
+      const mnemonic = String(row.mnemonic ?? row.assoc ?? row.association ?? '').trim();
+      const example = String(row.example ?? row.sentence ?? '').trim();
+      const exampleMeaning = String(row.exampleMeaning ?? row.example_ko ?? row.exampleKo ?? row.example_meaning ?? '').trim();
+      const tags = Array.isArray(row.tags) ? row.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+      parsed.push({ prompt, answer: 'O', meaning, mnemonic, example, exampleMeaning, explanation: meaning, tags });
+    } else {
+      const ans = normalizeAnswer(row.answer ?? row.meaning ?? row.ox ?? row.OX ?? row.correct ?? row.tf ?? row.trueFalse);
+      const explanation = String(row.explanation ?? row.example ?? row.mnemonic ?? '').trim();
+      const tags = Array.isArray(row.tags) ? row.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+      if (!ans) {
+        errors.push(`${i + 1}번째: answer O/X 판별 불가`);
+        continue;
+      }
+      parsed.push({ prompt, answer: ans, explanation, tags });
+    }
+  }
+
+  if (parsed.length === 0) {
+    alert('추가할 카드가 없습니다.\n' + errors.slice(0, 5).join('\n'));
+    return;
+  }
+
+  if (isVocab && vocabDedupe) {
+    const { index: existingIndex, mergedExisting } = mergeVocabDuplicatesInDeck(targetDeckId);
+    const inputMap = new Map();
+    let inputDup = 0;
+    parsed.forEach((it) => {
+      const k = normalizePromptKey(it.prompt);
+      if (!k) return;
+      if (inputMap.has(k)) inputDup++;
+      inputMap.set(k, it);
+    });
+    const uniqueParsed = Array.from(inputMap.values());
+
+    let willAdd = 0;
+    let willOverwrite = 0;
+    uniqueParsed.forEach((it) => {
+      const k = normalizePromptKey(it.prompt);
+      if (!k) return;
+      if (existingIndex.has(k)) willOverwrite++;
+      else willAdd++;
+    });
+
+    const ok = confirm(
+      `단어 ${uniqueParsed.length}개를 '${deck.name}'에 반영할까요?\n` +
+      `- 새로 추가: ${willAdd}개\n` +
+      `- 덮어쓰기(중복 제거): ${willOverwrite}개` +
+      (inputDup ? `\n- 입력 중복 제거: ${inputDup}개` : '') +
+      (mergedExisting ? `\n- 기존 중복 정리: ${mergedExisting}개` : '') +
+      (errors.length ? `\n(오류 ${errors.length}개는 건너뜀)` : '')
+    );
+    if (!ok) return;
+
+    let added = 0;
+    let overwritten = 0;
+    uniqueParsed.forEach((it) => {
+      const k = normalizePromptKey(it.prompt);
+      if (!k) return;
+      const existingId = existingIndex.get(k);
+      const meaning = String(it.meaning ?? it.explanation ?? '').trim();
+      const mnemonic = String(it.mnemonic ?? '').trim();
+      const example = String(it.example ?? '').trim();
+      const exampleMeaning = String(it.exampleMeaning ?? it.example_ko ?? it.exampleKo ?? it.example_meaning ?? '').trim();
+      const tags = Array.isArray(it.tags) ? it.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+
+      if (existingId) {
+        const card = DATA.cards.find((c) => c.id === existingId);
+        if (card) {
+          card.prompt = it.prompt;
+          card.answer = 'O';
+          if (meaning) {
+            card.meaning = meaning;
+            card.explanation = meaning;
+          } else {
+            if (!card.meaning && card.explanation) card.meaning = String(card.explanation || '').trim();
+            if (card.meaning && !card.explanation) card.explanation = String(card.meaning || '').trim();
+          }
+          if (mnemonic) card.mnemonic = mnemonic;
+          if (example) card.example = example;
+          if (exampleMeaning) card.exampleMeaning = exampleMeaning;
+          if (tags.length) {
+            card.tags = Array.from(new Set([...(card.tags || []), ...tags].map((t) => String(t).trim()).filter(Boolean)));
+          }
+          card.updatedAt = now();
+          if (!DATA.stats[existingId]) DATA.stats[existingId] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+          card.bookmarked = !!DATA.stats[existingId].bookmark;
+          overwritten++;
+          return;
+        }
+      }
+
+      const id = uuid();
+      DATA.cards.push({
+        id,
+        deckId: targetDeckId,
+        prompt: it.prompt,
+        answer: 'O',
+        explanation: meaning || '',
+        tags: tags || [],
+        meaning: meaning || '',
+        mnemonic: mnemonic || '',
+        example: example || '',
+        exampleMeaning: exampleMeaning || '',
+        createdAt: now(),
+        updatedAt: now(),
+        bookmarked: false,
+      });
+      DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+      existingIndex.set(k, id);
+      added++;
+    });
+
+    appendMissingDayTags(targetDeckId, DEFAULT_DAILY_NEW_COUNT);
+    commit();
+    toast(`완료: 추가 ${added}개 / 덮어쓰기 ${overwritten}개` + (inputDup ? ` / 입력중복 ${inputDup}개` : '') + (mergedExisting ? ` / 기존중복정리 ${mergedExisting}개` : ''));
+    location.hash = `#/deck/${targetDeckId}`;
+    renderRoute();
+    return;
+  }
+
+  const ok = confirm(`카드 ${parsed.length}개를 '${deck.name}'에 추가할까요?` + (errors.length ? `\n(오류 ${errors.length}개는 건너뜀)` : ''));
+  if (!ok) return;
+
+  parsed.forEach((x) => {
+    const id = uuid();
+    DATA.cards.push({
+      id,
+      deckId: targetDeckId,
+      prompt: x.prompt,
+      answer: x.answer,
+      explanation: x.explanation,
+      tags: x.tags || [],
+      meaning: x.meaning || '',
+      mnemonic: x.mnemonic || '',
+      example: x.example || '',
+      exampleMeaning: x.exampleMeaning || '',
+      createdAt: now(),
+      updatedAt: now(),
+      bookmarked: false,
+    });
+    DATA.stats[id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false };
+  });
+
+  if (isVocab) appendMissingDayTags(targetDeckId, DEFAULT_DAILY_NEW_COUNT);
+  commit();
+  toast(`추가됨: ${parsed.length}개`);
+  location.hash = `#/deck/${targetDeckId}`;
+  renderRoute();
+}
+
+function maybeAutoResumeOnLoad() {
+  if (!STUDY) return false;
+  if (location.hash && !['#', '#/'].includes(location.hash)) return false;
+  if (!Array.isArray(STUDY.queue) || STUDY.queue.length === 0) return false;
+  if (STUDY.phase !== 'study') return false;
+  location.hash = buildStudyHashExact(
+    STUDY.deckId,
+    STUDY.mode || 'all',
+    STUDY.tagFilter?.tags || [],
+    STUDY.tagFilter?.match || 'any'
+  );
+  return true;
+}
+
+
+// Initial render (patched)
 maybeAutoResumeOnLoad();
 renderRoute();
