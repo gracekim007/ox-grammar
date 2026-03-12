@@ -1,7 +1,7 @@
 {
-  "name": "OX 문법",
+  "name": "OX 문법 · 단어장",
   "short_name": "OX문법",
-  "description": "문장 OX로 문법을 회독하는 오프라인 학습 앱 (PWA)",
+  "description": "OX 문법/단어장 · 30개/day 자동추천 · 이어하기 지원 PWA",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
