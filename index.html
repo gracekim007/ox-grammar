@@ -43,14 +43,27 @@
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-  <script type="module" src="./app.js"></script>
   <script>
-    // Register service worker for offline support (works only on https or localhost)
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js').catch(() => {});
-      });
-    }
-  </script>
+  (async () => {
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister().catch(() => {})));
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k).catch(() => {})));
+      }
+    } catch (e) {}
+  })();
+
+  window.addEventListener('error', function (e) {
+    const app = document.getElementById('app');
+    if (!app) return;
+    if (app.innerHTML && app.innerHTML.trim()) return;
+    app.innerHTML = '<div class="card" style="margin:12px;">앱 스크립트 로딩 중 오류가 발생했습니다.<br>이 페이지를 완전히 새로고침하거나, 브라우저 탭을 닫고 다시 열어주세요.<br><span style="font-size:12px;color:#666;">' + String(e.message || 'unknown error') + '</span></div>';
+  });
+</script>
+<script type="module" src="./app-v15.js?v=15"></script>
 </body>
 </html>
