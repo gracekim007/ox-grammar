@@ -713,7 +713,7 @@ function openTagStudyModal(deckId, opts = {}) {
   });
 }
 
-function renderHome() {
+function __old_renderHome() {
   setSubtitle('카테고리 목록');
 
   const decks = DATA.decks.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -811,7 +811,7 @@ function renderHome() {
 }
 
 
-function openDeckModal(existingDeck = null) {
+function __old_openDeckModal(existingDeck = null) {
   const isEdit = !!existingDeck;
   const deck = existingDeck || { name: '', description: '', type: 'grammar' };
   const curType = String(deck.type || '').toLowerCase() === 'vocab' ? 'vocab' : 'grammar';
@@ -878,7 +878,7 @@ function openDeckModal(existingDeck = null) {
 }
 
 
-function renderDeck(deckId) {
+function __old_renderDeck(deckId) {
   const deck = getDeck(deckId);
   if (!deck) {
     appEl.innerHTML = `<div class="card">존재하지 않는 카테고리입니다.</div>`;
