@@ -1433,6 +1433,13 @@ function renderStudy(deckId, opts = {}) {
           `}
         </div>
 
+        <div class="row" style="gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items:center;">
+          <span class="pill">답 수정</span>
+          <button class="btn small ${STUDY.choice === 'O' ? 'primary' : ''}" id="btn-fix-o">O</button>
+          <button class="btn small ${STUDY.choice === 'X' ? 'danger' : ''}" id="btn-fix-x">X</button>
+          <span style="font-size:12px; color: var(--muted);">실수로 잘못 눌렀으면 다음 전에 바꿀 수 있어요.</span>
+        </div>
+
         <button class="btn primary block" id="btn-next">다음</button>
 
         <div style="margin-top: 10px; display:flex; gap: 8px; justify-content: space-between; flex-wrap: wrap;">
@@ -1457,20 +1464,33 @@ function renderStudy(deckId, opts = {}) {
     </div>
   `;
 
-  function grade(choice) {
-    if (STUDY.answered) return;
+  function cardChoiceIsCorrect(choice) {
+    const normalized = normalizeAnswer(choice);
+    if (!normalized) return false;
+    return isVocab ? (normalized === 'O') : (normalized === card.answer);
+  }
 
+  function removeRecordedChoice(choice) {
     const normalized = normalizeAnswer(choice);
     if (!normalized) return;
-
-    STUDY.choice = normalized; // 'O' | 'X'
-    STUDY.answered = true;
-
-    const isCorrect = isVocab ? (normalized === 'O') : (normalized === card.answer);
-    STUDY.lastIsCorrect = isCorrect;
-
     const st = DATA.stats[card.id] || (DATA.stats[card.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false });
+    const wasCorrect = cardChoiceIsCorrect(normalized);
+    if (wasCorrect) {
+      st.correct = Math.max(0, (st.correct || 0) - 1);
+      STUDY.correctCount = Math.max(0, (STUDY.correctCount || 0) - 1);
+    } else {
+      st.wrong = Math.max(0, (st.wrong || 0) - 1);
+      STUDY.wrongCount = Math.max(0, (STUDY.wrongCount || 0) - 1);
+      const idx = STUDY.wrongIds ? STUDY.wrongIds.lastIndexOf(card.id) : -1;
+      if (idx >= 0) STUDY.wrongIds.splice(idx, 1);
+    }
+  }
 
+  function recordChoice(choice) {
+    const normalized = normalizeAnswer(choice);
+    if (!normalized) return false;
+    const st = DATA.stats[card.id] || (DATA.stats[card.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false });
+    const isCorrect = cardChoiceIsCorrect(normalized);
     if (isCorrect) {
       st.correct = (st.correct || 0) + 1;
       STUDY.correctCount += 1;
@@ -1479,7 +1499,24 @@ function renderStudy(deckId, opts = {}) {
       STUDY.wrongCount += 1;
       STUDY.wrongIds.push(card.id);
     }
+    return isCorrect;
+  }
 
+  function grade(choice) {
+    const normalized = normalizeAnswer(choice);
+    if (!normalized) return;
+
+    if (STUDY.answered && STUDY.choice === normalized) return;
+
+    if (STUDY.answered && STUDY.choice) {
+      removeRecordedChoice(STUDY.choice);
+    }
+
+    STUDY.choice = normalized; // 'O' | 'X'
+    STUDY.answered = true;
+    STUDY.lastIsCorrect = recordChoice(normalized);
+
+    const st = DATA.stats[card.id] || (DATA.stats[card.id] = { correct: 0, wrong: 0, lastReviewed: null, bookmark: false });
     st.lastReviewed = now();
     commit();
     saveStudyState();
@@ -1552,6 +1589,12 @@ function renderStudy(deckId, opts = {}) {
 
   const nextBtn = $('#btn-next');
   if (nextBtn) nextBtn.addEventListener('click', goNext);
+
+  const fixO = $('#btn-fix-o');
+  if (fixO) fixO.addEventListener('click', () => grade('O'));
+
+  const fixX = $('#btn-fix-x');
+  if (fixX) fixX.addEventListener('click', () => grade('X'));
 }
 
 
@@ -2461,6 +2504,7 @@ function loadStudyState() {
 
 function getResumeStudyMeta() {
   if (!STUDY) return null;
+  if (STUDY.phase === 'summary') return null;
   const deck = getDeck(STUDY.deckId);
   if (!deck) return null;
   if (!Array.isArray(STUDY.queue) || STUDY.queue.length === 0) return null;
@@ -2471,13 +2515,22 @@ function getResumeStudyMeta() {
   const currentCard = DATA.cards.find((c) => c.id === currentCardId) || null;
   const isVocab = String(deck.type || '').toLowerCase() === 'vocab';
 
+  let modeLabel = STUDY.mode === 'bookmarks' ? '북마크' : (STUDY.mode === 'wrongs' ? (isVocab ? '모름' : '오답') : '전체');
+  const tf = STUDY.tagFilter;
+  if (tf && Array.isArray(tf.tags) && tf.tags.length) {
+    const preview = tf.tags.length === 1
+      ? tf.tags[0]
+      : `${tf.tags.slice(0, 2).join(', ')}${tf.tags.length > 2 ? ` +${tf.tags.length - 2}` : ''}`;
+    modeLabel = modeLabel === '전체' ? preview : `${modeLabel} · ${preview}`;
+  }
+
   return {
     deck,
     total,
     current,
     prompt: currentCard ? currentCard.prompt : '',
     isVocab,
-    modeLabel: STUDY.mode === 'bookmarks' ? '북마크' : (STUDY.mode === 'wrongs' ? (isVocab ? '모름' : '오답') : '전체'),
+    modeLabel,
   };
 }
 
@@ -2678,10 +2731,23 @@ function openDayStudyModal(deckId) {
         <div style="font-weight:800; margin-bottom:6px;">${escapeText(deck.name)}</div>
         <div style="font-size:13px; color: var(--muted); line-height:1.6;">
           단어장은 <b>30개/day</b> 기준으로 자동 분할됩니다.<br>
-          원하는 DAY를 골라서 그 안의 단어만 학습하세요.
+          <b>한 개 DAY만</b> 고르거나, <b>여러 DAY를 함께</b> 골라서 학습할 수 있어요.
         </div>
       </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div class="row" style="justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+          <div id="day-selected-info" style="font-size:13px; font-weight:700;">선택한 DAY 없음</div>
+          <div class="row" style="gap:8px; flex-wrap:wrap;">
+            <button class="btn small" id="btn-day-select-all">전체 선택</button>
+            <button class="btn small" id="btn-day-clear">전체 해제</button>
+            <button class="btn primary small" id="btn-day-start" disabled>선택한 DAY 학습</button>
+          </div>
+        </div>
+      </div>
+
       <div id="day-list" style="display:flex; flex-direction:column; gap:10px;"></div>
+
       <div class="row" style="justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:12px;">
         <div style="font-size:12px; color:var(--muted);">새 단어를 추가하면 마지막 DAY 뒤로 이어서 자동 배정됩니다.</div>
         <button class="btn small" id="btn-day-rebuild">DAY 다시 정리</button>
@@ -2689,28 +2755,93 @@ function openDayStudyModal(deckId) {
     `,
     onMount: (root) => {
       const listEl = $('#day-list', root);
-      rows.forEach((row) => {
-        const item = document.createElement('div');
-        item.className = 'card';
-        item.style.margin = '0';
-        item.innerHTML = `
-          <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap;">
-            <div>
-              <div style="font-weight:800; font-size:15px;">${escapeText(row.tag)}</div>
-              <div style="font-size:13px; color:var(--muted); margin-top:4px;">
-                단어 ${row.total}개 · 모름 ${row.wrong}개 · 북마크 ${row.bookmarked}개
+      const infoEl = $('#day-selected-info', root);
+      const startEl = $('#btn-day-start', root);
+      const selected = new Set();
+
+      function orderedSelectedTags() {
+        return Array.from(selected).sort((a, b) => dayTagNum(a) - dayTagNum(b));
+      }
+
+      function refreshSelectionInfo() {
+        const arr = orderedSelectedTags();
+        if (!arr.length) {
+          infoEl.textContent = '선택한 DAY 없음';
+          startEl.disabled = true;
+          return;
+        }
+        const preview = arr.slice(0, 3).join(', ') + (arr.length > 3 ? ` +${arr.length - 3}` : '');
+        infoEl.textContent = `선택 ${arr.length}개 · ${preview}`;
+        startEl.disabled = false;
+      }
+
+      function toggleDay(tag, forceValue = null) {
+        if (forceValue === true) selected.add(tag);
+        else if (forceValue === false) selected.delete(tag);
+        else if (selected.has(tag)) selected.delete(tag);
+        else selected.add(tag);
+        renderRows();
+      }
+
+      function renderRows() {
+        listEl.innerHTML = '';
+        rows.forEach((row) => {
+          const picked = selected.has(row.tag);
+          const item = document.createElement('div');
+          item.className = 'card';
+          item.style.margin = '0';
+          item.innerHTML = `
+            <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap;">
+              <label style="display:flex; gap:12px; align-items:flex-start; cursor:pointer; flex:1 1 260px; min-width:220px;">
+                <input type="checkbox" ${picked ? 'checked' : ''} data-day-check="${escapeText(row.tag)}" style="width:18px; height:18px; margin-top:2px;" />
+                <div>
+                  <div style="font-weight:800; font-size:15px;">${escapeText(row.tag)}</div>
+                  <div style="font-size:13px; color:var(--muted); margin-top:4px; line-height:1.5;">
+                    단어 ${row.total}개 · 모름 ${row.wrong}개 · 북마크 ${row.bookmarked}개
+                  </div>
+                </div>
+              </label>
+              <div class="row" style="gap:8px; flex-wrap:wrap;">
+                <button class="btn ${picked ? 'primary' : ''} small" data-day-toggle="${escapeText(row.tag)}">${picked ? '선택됨' : '선택'}</button>
+                <button class="btn small" data-study-day="${escapeText(row.tag)}">이 DAY만</button>
               </div>
             </div>
-            <div class="row" style="gap:8px; flex-wrap:wrap;">
-              <button class="btn primary small" data-study-day="${escapeText(row.tag)}">학습</button>
-            </div>
-          </div>
-        `;
-        $('[data-study-day]', item).addEventListener('click', () => {
-          closeModal();
-          location.hash = buildStudyHashExact(deckId, 'all', [row.tag], 'any');
+          `;
+
+          $('[data-day-check]', item).addEventListener('change', (e) => {
+            toggleDay(row.tag, e.target.checked);
+          });
+          $('[data-day-toggle]', item).addEventListener('click', () => {
+            toggleDay(row.tag);
+          });
+          $('[data-study-day]', item).addEventListener('click', () => {
+            closeModal();
+            location.hash = buildStudyHashExact(deckId, 'all', [row.tag], 'any');
+          });
+
+          listEl.appendChild(item);
         });
-        listEl.appendChild(item);
+        refreshSelectionInfo();
+      }
+
+      $('#btn-day-select-all', root).addEventListener('click', () => {
+        rows.forEach((row) => selected.add(row.tag));
+        renderRows();
+      });
+
+      $('#btn-day-clear', root).addEventListener('click', () => {
+        selected.clear();
+        renderRows();
+      });
+
+      startEl.addEventListener('click', () => {
+        const chosen = orderedSelectedTags();
+        if (!chosen.length) {
+          toast('DAY를 하나 이상 선택하세요');
+          return;
+        }
+        closeModal();
+        location.hash = buildStudyHashExact(deckId, 'all', chosen, 'any');
       });
 
       $('#btn-day-rebuild', root).addEventListener('click', () => {
@@ -2721,6 +2852,8 @@ function openDayStudyModal(deckId) {
         toast('DAY를 30개/day 기준으로 다시 나눴어요');
         renderRoute();
       });
+
+      renderRows();
     },
   });
 }
@@ -2759,20 +2892,6 @@ function renderHome() {
       <button class="btn" id="btn-go-import">가져오기</button>
     </div>
 
-    ${resume ? `
-      <div class="card" style="margin-top: 12px;">
-        <div style="font-weight: 800; margin-bottom: 6px;">이어서 학습</div>
-        <div style="font-size: 13px; color: var(--muted); line-height: 1.6;">
-          <b>${escapeText(resume.deck.name)}</b> · ${escapeText(resume.modeLabel)} · ${resume.current}/${resume.total}<br>
-          ${resume.prompt ? escapeText(resume.prompt.length > 70 ? resume.prompt.slice(0, 70) + '…' : resume.prompt) : ''}
-        </div>
-        <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 10px;">
-          <button class="btn primary small" id="btn-resume-study">이어서 학습</button>
-          <button class="btn small" id="btn-clear-resume">이어하기 삭제</button>
-        </div>
-      </div>
-    ` : ''}
-
     <div class="section-title">카테고리</div>
     <div class="deck-grid" id="deck-grid"></div>
 
@@ -2791,23 +2910,6 @@ function renderHome() {
   $('#btn-new-deck').addEventListener('click', () => openDeckModal());
   $('#btn-go-import').addEventListener('click', () => (location.hash = '#/import'));
 
-  if (resume) {
-    $('#btn-resume-study').addEventListener('click', () => {
-      location.hash = buildStudyHashExact(
-        resume.deck.id,
-        STUDY.mode || 'all',
-        STUDY.tagFilter?.tags || [],
-        STUDY.tagFilter?.match || 'any'
-      );
-    });
-    $('#btn-clear-resume').addEventListener('click', () => {
-      STUDY = null;
-      clearStudyState();
-      toast('이어하기가 삭제되었어요');
-      renderHome();
-    });
-  }
-
   const grid = $('#deck-grid');
   if (decks.length === 0) {
     grid.innerHTML = `<div class="card">아직 카테고리가 없습니다. <b>+ 카테고리</b>로 시작하세요.</div>`;
@@ -2824,6 +2926,7 @@ function renderHome() {
     const labelWrong = isVocab ? '모름' : '오답';
     const labelAcc = isVocab ? '알았음률' : '정답률';
     const dayMeta = isVocab ? getDeckPlanMeta(deck.id) : null;
+    const deckResume = resume && resume.deck.id === deck.id ? resume : null;
 
     const meta = [
       `${labelCards} ${s.cardsCount}개`,
@@ -2838,6 +2941,19 @@ function renderHome() {
     el.innerHTML = `
       <div class="deck-title">${escapeText(deck.name)}</div>
       <div class="deck-meta">${escapeText(meta)}</div>
+      ${deckResume ? `
+        <div class="card" style="margin: 10px 0 12px; background:#fff;">
+          <div style="font-weight: 800; margin-bottom: 6px;">이어서 학습</div>
+          <div style="font-size: 13px; color: var(--muted); line-height: 1.6;">
+            <b>${escapeText(deckResume.modeLabel)}</b> · ${deckResume.current}/${deckResume.total}<br>
+            ${deckResume.prompt ? escapeText(deckResume.prompt.length > 70 ? deckResume.prompt.slice(0, 70) + '…' : deckResume.prompt) : ''}
+          </div>
+          <div class="row" style="gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+            <button class="btn primary small" data-action="resume">이어서 학습</button>
+            <button class="btn small" data-action="resume-clear">이어하기 삭제</button>
+          </div>
+        </div>
+      ` : ''}
       <div class="deck-actions">
         ${isVocab
           ? `
@@ -2859,6 +2975,28 @@ function renderHome() {
     if (isVocab) {
       el.querySelector('[data-action="study-day"]').addEventListener('click', () => {
         openDayStudyModal(deck.id);
+      });
+    }
+
+    const resumeBtn = el.querySelector('[data-action="resume"]');
+    if (resumeBtn) {
+      resumeBtn.addEventListener('click', () => {
+        location.hash = buildStudyHashExact(
+          deck.id,
+          STUDY?.mode || 'all',
+          STUDY?.tagFilter?.tags || [],
+          STUDY?.tagFilter?.match || 'any'
+        );
+      });
+    }
+
+    const resumeClearBtn = el.querySelector('[data-action="resume-clear"]');
+    if (resumeClearBtn) {
+      resumeClearBtn.addEventListener('click', () => {
+        STUDY = null;
+        clearStudyState();
+        toast('이어하기가 삭제되었어요');
+        renderHome();
       });
     }
 
