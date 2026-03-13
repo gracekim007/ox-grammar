@@ -128,6 +128,16 @@ function isEnglishVocabDeck(deck) {
   return String(deck?.type || '').toLowerCase() === 'vocab' && /(영단어|english|eng|vocab)/i.test(name);
 }
 
+function getDeckDailyCount(deckOrId) {
+  const deck = typeof deckOrId === 'string' ? getDeck(deckOrId) : deckOrId;
+  const n = Number(deck?.dailyCount);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_DAILY_NEW_COUNT;
+}
+
+function dailyCountLabel(deckOrId) {
+  return `${getDeckDailyCount(deckOrId)}개/day`;
+}
+
 // -------------------------
 // Storage
 // -------------------------
@@ -629,11 +639,20 @@ function uniqueSorted(arr) {
 function getDeckTags(deckId, baseMode = 'all') {
   // baseMode: all/bookmarks/wrongs
   const ids = getCardIdsForMode(deckId, baseMode);
+  const deck = getDeck(deckId);
+  const isVocab = String(deck?.type || '').toLowerCase() === 'vocab';
+  const hiddenTag = String(deck?.name || '').trim();
   const tags = [];
   ids.forEach((cid) => {
     const c = DATA.cards.find((x) => x.id === cid);
     if (!c) return;
-    (c.tags || []).forEach((t) => tags.push(normalizeTag(t)));
+    (c.tags || []).forEach((raw) => {
+      const t = normalizeTag(raw);
+      if (!t) return;
+      if (isVocab && /^DAY\d+$/i.test(t)) return;
+      if (isVocab && hiddenTag && t === hiddenTag) return;
+      tags.push(t);
+    });
   });
   return uniqueSorted(tags);
 }
@@ -2499,18 +2518,18 @@ function formatPlanSummary(deckId) {
   const totalDays = info?.totalDays || Math.ceil(cardsCount / (Number(deck.dailyCount) || DEFAULT_DAILY_NEW_COUNT));
 
   if (!info || !info.totalDays) {
-    return `30개/day · 총 ${totalDays}일`;
+    return `${dailyCountLabel(deck)} · 총 ${totalDays}일`;
   }
 
   if (!info.startDate) {
-    return `30개/day · 총 ${info.totalDays}일 · 미시작`;
+    return `${dailyCountLabel(deck)} · 총 ${info.totalDays}일 · 미시작`;
   }
 
   if (info.currentNewDay) {
-    return `30개/day · 오늘 ${info.newTag}/${info.totalDays}`;
+    return `${dailyCountLabel(deck)} · 오늘 ${info.newTag}/${info.totalDays}`;
   }
 
-  return `30개/day · 신규 완료 · 복습 ${info.reviewTags.length}세트`;
+  return `${dailyCountLabel(deck)} · 신규 완료 · 복습 ${info.reviewTags.length}세트`;
 }
 
 function ensureDeckPlan(deckId, opts = {}) {
@@ -2544,7 +2563,7 @@ function startRecommendedStudy(deckId) {
   }
 
   if (!hadDayTags) {
-    toast(`30개/day로 자동 분할했어요 · 총 ${info.totalDays}일`);
+    toast(`${dailyCountLabel(deck)}로 자동 분할했어요 · 총 ${info.totalDays}일`);
   } else if (!deck.planStartDate) {
     toast('오늘을 DAY1 기준으로 설정했어요');
   }
@@ -2570,8 +2589,8 @@ function resetPlanStartToday(deckId) {
 }
 
 function rebuildPlan30(deckId) {
-  const totalDays = assignDeckDayTags(deckId, DEFAULT_DAILY_NEW_COUNT, true);
-  toast(`30개/day로 다시 나눴어요 · 총 ${totalDays}일`);
+  const totalDays = assignDeckDayTags(deckId, getDeckDailyCount(deckId), true);
+  toast(`${dailyCountLabel(deckId)}로 다시 나눴어요 · 총 ${totalDays}일`);
   renderRoute();
 }
 
@@ -2695,11 +2714,11 @@ function openDeckModal(existingDeck = null) {
 
       <div class="field">
         <label>설명 (선택)</label>
-        <textarea id="deck-desc" placeholder="예) 30개/day 자동추천 · 키워드→이론">${escapeText(deck.description || '')}</textarea>
+        <textarea id="deck-desc" placeholder="예) 100개/day 자동분할 · 키워드→이론">${escapeText(deck.description || '')}</textarea>
       </div>
 
       <div class="card" style="background:#fff; font-size:13px; color:var(--muted); line-height:1.6;">
-        · 단어장 카테고리는 <b>30개/day 자동추천</b>을 바로 사용할 수 있어요.<br>
+        · 단어장 카테고리는 <b>dailyCount 기준 자동 DAY 분할</b>을 바로 사용할 수 있어요.<br>
         · 학습 도중 앱을 나가도 <b>이어하기</b>로 같은 위치에서 다시 시작할 수 있어요.
       </div>
 
@@ -2849,8 +2868,8 @@ function getDeckPlanMeta(deckId) {
   const deck = getDeck(deckId);
   if (!deck || String(deck.type || '').toLowerCase() !== 'vocab') return null;
   const rows = getDeckDayRows(deckId);
-  if (!rows.length) return `30개/day · DAY 없음`;
-  return `30개/day · DAY ${rows.length}개`;
+  if (!rows.length) return `${dailyCountLabel(deck)} · DAY 없음`;
+  return `${dailyCountLabel(deck)} · DAY ${rows.length}개`;
 }
 
 function openDayStudyModal(deckId) {
@@ -2868,7 +2887,7 @@ function openDayStudyModal(deckId) {
       <div class="card" style="margin-bottom:12px;">
         <div style="font-weight:800; margin-bottom:6px;">${escapeText(deck.name)}</div>
         <div style="font-size:13px; color: var(--muted); line-height:1.6;">
-          단어장은 <b>30개/day</b> 기준으로 자동 분할됩니다.<br>
+          단어장은 <b>${escapeText(dailyCountLabel(deck))}</b> 기준으로 자동 분할됩니다.<br>
           <b>한 개 DAY만</b> 고르거나, <b>여러 DAY를 함께</b> 골라서 학습할 수 있어요.
         </div>
       </div>
@@ -2983,11 +3002,11 @@ function openDayStudyModal(deckId) {
       });
 
       $('#btn-day-rebuild', root).addEventListener('click', () => {
-        const ok = confirm('현재 단어장을 30개/day 기준으로 처음부터 다시 나눌까요? 기존 DAY 태그는 덮어써집니다.');
+        const ok = confirm(`현재 단어장을 ${dailyCountLabel(deckId)} 기준으로 처음부터 다시 나눌까요? 기존 DAY 태그는 덮어써집니다.`);
         if (!ok) return;
-        assignDeckDayTags(deckId, DEFAULT_DAILY_NEW_COUNT, false);
+        assignDeckDayTags(deckId, getDeckDailyCount(deckId), false);
         closeModal();
-        toast('DAY를 30개/day 기준으로 다시 나눴어요');
+        toast(`DAY를 ${dailyCountLabel(deckId)} 기준으로 다시 나눴어요`);
         renderRoute();
       });
 
@@ -3039,7 +3058,7 @@ function renderHome() {
       <div style="font-size: 13px; color: var(--muted); line-height: 1.6;">
         · <b>문법 OX</b>: 문장을 보고 <span class="kbd">O</span>/<span class="kbd">X</span> 선택 → 정답/해설 확인 → <span class="kbd">다음</span>.<br>
         · <b>단어장</b>: 단어를 보고 <span class="kbd">O</span>(앎)/<span class="kbd">X</span>(모름) 선택 → 뜻/연상/예문/해석 확인 → <span class="kbd">다음</span>.<br>
-        · <b>DAY 학습</b>: 단어장은 <b>30개/day</b>로 자동 분할되고, 원하는 DAY를 직접 골라서 학습합니다.<br>
+        · <b>DAY 학습</b>: 단어장은 <b>카테고리별 dailyCount</b> 기준으로 자동 분할되고, 원하는 DAY를 직접 골라서 학습합니다.<br>
         · 앱을 나갔다 와도 <b>이어서 학습</b>으로 계속 볼 수 있어요.
       </div>
     </div>
@@ -3191,7 +3210,7 @@ function renderDeck(deckId) {
     <div class="card" style="margin-bottom: 12px;">
       <div style="font-weight:800; font-size:15px;">DAY 분할</div>
       <div style="color: var(--muted); font-size: 13px; line-height:1.6; margin-top:8px;">
-        30개/day 기준 · 총 <b>${dayRows.length}</b>개 DAY
+        ${dailyCountLabel(deck)} 기준 · 총 <b>${dayRows.length}</b>개 DAY
         <br>새 단어를 추가하면 마지막 DAY 뒤에 이어서 자동 배정됩니다.
       </div>
       <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
@@ -3246,10 +3265,10 @@ function renderDeck(deckId) {
     if (topDayBtn) topDayBtn.addEventListener('click', () => openDayStudyModal(deckId));
     const rebuildDayBtn = $('#btn-rebuild-day-top');
     if (rebuildDayBtn) rebuildDayBtn.addEventListener('click', () => {
-      const ok = confirm('현재 단어장을 30개/day 기준으로 처음부터 다시 나눌까요? 기존 DAY 태그는 덮어써집니다.');
+      const ok = confirm(`현재 단어장을 ${dailyCountLabel(deckId)} 기준으로 처음부터 다시 나눌까요? 기존 DAY 태그는 덮어써집니다.`);
       if (!ok) return;
-      assignDeckDayTags(deckId, DEFAULT_DAILY_NEW_COUNT, false);
-      toast('DAY를 30개/day 기준으로 다시 나눴어요');
+      assignDeckDayTags(deckId, getDeckDailyCount(deckId), false);
+      toast(`DAY를 ${dailyCountLabel(deckId)} 기준으로 다시 나눴어요`);
       renderRoute();
     });
   }
