@@ -1,6 +1,6 @@
 /* OX 문법 PWA service worker */
 
-const CACHE_NAME = 'ox-grammar-cache-v22-pron-syn-poly';
+const CACHE_NAME = 'ox-grammar-cache-v23-autobookmark-100day';
 const ASSETS = [
   './',
   './index.html',

@@ -6,7 +6,7 @@
 const STORAGE_KEY = 'oxGrammarData.v2';
 const APP_DATA_VERSION = 3;
 const STUDY_STATE_KEY = 'oxGrammarStudyState.v1';
-const DEFAULT_DAILY_NEW_COUNT = 30;
+const DEFAULT_DAILY_NEW_COUNT = 100;
 const DEFAULT_REVIEW_INTERVALS = [1, 3, 7, 14, 30];
 const THEME_KEY = 'oxGrammarTheme.v1';
 
@@ -310,6 +310,7 @@ function normalizeData(data) {
 
     if (deck.description == null) deck.description = '';
     if (!Number.isFinite(Number(deck.dailyCount)) || Number(deck.dailyCount) <= 0) deck.dailyCount = DEFAULT_DAILY_NEW_COUNT;
+    if (isEnglishVocabDeck(deck)) deck.dailyCount = 100;
     if (!Array.isArray(deck.planReviewIntervals) || deck.planReviewIntervals.length === 0) deck.planReviewIntervals = DEFAULT_REVIEW_INTERVALS.slice();
     if (deck.planStartDate == null) deck.planStartDate = '';
   });
@@ -1613,6 +1614,10 @@ function renderStudy(deckId, opts = {}) {
       st.wrong = (st.wrong || 0) + 1;
       STUDY.wrongCount += 1;
       STUDY.wrongIds.push(card.id);
+      if (isVocab && (st.wrong || 0) >= 5) {
+        st.bookmark = true;
+        card.bookmarked = true;
+      }
     }
     return isCorrect;
   }
